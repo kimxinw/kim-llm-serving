@@ -2,6 +2,14 @@ cmake_minimum_required(VERSION 3.18)
 
 project(kimrt_llm_l1 LANGUAGES CXX)
 
+include(CTest)
+
+get_filename_component(
+    KIMRT_ROOT
+    "${CMAKE_CURRENT_LIST_DIR}/../.."
+    ABSOLUTE
+)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -98,66 +106,132 @@ get_filename_component(
     DIRECTORY
 )
 
+add_library(
+    kimrt_llm
+    STATIC
+    "${KIMRT_ROOT}/src/models/llm/trtllm_executor_backend.cpp"
+    "${KIMRT_ROOT}/src/core/serial_executor.cpp"
+)
+
+target_include_directories(
+    kimrt_llm
+    PUBLIC
+        "${KIMRT_ROOT}/include"
+    PRIVATE
+        "${TRTLLM_SOURCE_DIR}/cpp/include"
+        "${TRT_INCLUDE_DIR}"
+        "${CUDAToolkit_INCLUDE_DIRS}"
+        "$ENV{CONDA_PREFIX}/targets/x86_64-linux/include"
+)
+
+target_compile_definitions(
+    kimrt_llm
+    PUBLIC
+        _GLIBCXX_USE_CXX11_ABI=0
+    PRIVATE
+        ENABLE_MULTI_DEVICE=1
+        ENABLE_BF16
+        ENABLE_FP8
+)
+
+target_compile_options(
+    kimrt_llm
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+target_link_libraries(
+    kimrt_llm
+    PRIVATE
+        "${TRTLLM_PLUGIN_LIBRARY}"
+        "${TRTLLM_LIBRARY}"
+        "${TRT_NVINFER_LIBRARY}"
+        CUDA::cuda_driver
+        CUDA::cudart_static
+        CUDA::nvml
+        MPI::MPI_CXX
+        Threads::Threads
+        "${CMAKE_DL_LIBS}"
+)
+
 add_executable(
     llm_infer
     llm_infer.cpp
 )
 
-target_include_directories(
-    llm_infer
-    PRIVATE
-    "${TRTLLM_SOURCE_DIR}/cpp/include"
-    "${TRT_INCLUDE_DIR}"
-    "${CUDAToolkit_INCLUDE_DIRS}"
-    "$ENV{CONDA_PREFIX}/targets/x86_64-linux/include"
-)
-
-target_compile_definitions(
-    llm_infer
-    PRIVATE
-    ENABLE_MULTI_DEVICE=1
-    ENABLE_BF16
-    ENABLE_FP8
-    _GLIBCXX_USE_CXX11_ABI=0
-)
-
 target_compile_options(
     llm_infer
     PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
+        -Wall
+        -Wextra
+        -Wpedantic
 )
 
 target_link_options(
-llm_infer
-PRIVATE
-    -Wl,--allow-shlib-undefined
+    llm_infer
+    PRIVATE
+        -Wl,--allow-shlib-undefined
 )
 
 target_link_libraries(
     llm_infer
     PRIVATE
-    "${TRTLLM_PLUGIN_LIBRARY}"
-    "${TRTLLM_LIBRARY}"
-    "${TRT_NVINFER_LIBRARY}"
-    CUDA::cuda_driver
-    CUDA::cudart_static
-    CUDA::nvml
-    MPI::MPI_CXX
-    Threads::Threads
-    "${CMAKE_DL_LIBS}"
+        kimrt_llm
 )
 
-set(LLM_BUILD_RPATH
-    "${TRTLLM_LIB_DIR}"
-    "${TRT_LIBRARY_DIR}"
-    "$ENV{CONDA_PREFIX}/lib"
-    "$ENV{CONDA_PREFIX}/targets/x86_64-linux/lib"
-)
+if(BUILD_TESTING)
+    set(
+        KIMRT_LLM_TEST_ENGINE_DIR
+        ""
+        CACHE PATH
+        "TinyLlama Engine directory used by LLM Backend lifecycle tests"
+    )
 
-set_target_properties(
-    llm_infer
-    PROPERTIES
-      BUILD_RPATH "${LLM_BUILD_RPATH}"
-)
+    add_executable(
+        llm_backend_lifecycle_test
+        "${KIMRT_ROOT}/tests/llm_backend_lifecycle_test.cpp"
+    )
+
+    target_compile_options(
+        llm_backend_lifecycle_test
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    target_link_options(
+        llm_backend_lifecycle_test
+        PRIVATE
+            -Wl,--allow-shlib-undefined
+    )
+
+    target_link_libraries(
+        llm_backend_lifecycle_test
+        PRIVATE
+            kimrt_llm
+    )
+
+    if(NOT "${KIMRT_LLM_TEST_ENGINE_DIR}" STREQUAL "")
+        add_test(
+            NAME llm_backend_token_and_lifecycle_baseline
+            COMMAND
+                llm_backend_lifecycle_test
+                "${KIMRT_LLM_TEST_ENGINE_DIR}"
+        )
+
+        set_tests_properties(
+            llm_backend_token_and_lifecycle_baseline
+            PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "CUDA_VISIBLE_DEVICES=0"
+        )
+    else()
+        message(
+            STATUS
+            "KIMRT_LLM_TEST_ENGINE_DIR is empty; LLM runtime test is not registered"
+        )
+    endif()
+endif()

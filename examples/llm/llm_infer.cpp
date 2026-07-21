@@ -1,300 +1,206 @@
+#include "models/llm/trtllm_executor_backend.h"
+
 #include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <iostream>
+#include <iterator>
 #include <optional>
-#include <stdexcept>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
-#include "tensorrt_llm/executor/executor.h"
-#include "tensorrt_llm/plugins/api/tllmPlugin.h"
+namespace {
 
-namespace fs = std::filesystem;
-namespace tle = tensorrt_llm::executor;
+constexpr std::size_t kMaxInputTokens{512};
+constexpr std::size_t kMaxSequenceTokens{544};
+constexpr std::size_t kMaxOutputTokens{32};
+constexpr std::uint64_t kRequestId{1};
+constexpr auto kRequestTimeout = std::chrono::seconds{180};
 
-namespace
-{
+struct Options {
+  std::filesystem::path engine;
+  std::size_t maxNewTokens{0};
+  std::vector<kimrt::llm::TokenId> inputTokens;
+};
 
-constexpr std::size_t kMaxInputTokens = 512;
-constexpr std::size_t kMaxSequenceTokens = 544;
-constexpr tle::SizeType32 kMaxOutputTokens = 32;
-constexpr tle::SizeType32 kBeamWidth = 1;
+struct Outcome {
+  std::vector<kimrt::llm::TokenId> tokens;
+  std::optional<kimrt::llm::FinishReason> finishReason;
+  std::optional<kimrt::Status> error;
+};
 
-bool parseInt32(std::string_view text, std::int32_t& value)
-{
-    if (text.empty())
-    {
-        return false;
-    }
+class FutureSink final : public kimrt::llm::GenerationSink {
+public:
+  std::future<Outcome> getFuture() { return result_.get_future(); }
 
-    auto const* begin = text.data();
-    auto const* end = text.data() + text.size();
+  void onTokens(kimrt::llm::TokenChunk chunk) override {
+    tokens_.insert(tokens_.end(),
+                   std::make_move_iterator(chunk.token_ids.begin()),
+                   std::make_move_iterator(chunk.token_ids.end()));
+  }
 
-    auto const [ptr, error] = std::from_chars(begin, end, value);
+  void onComplete(kimrt::llm::FinishReason reason) override {
+    result_.set_value(Outcome{std::move(tokens_), reason, std::nullopt});
+  }
 
-    return error == std::errc{} && ptr == end;
+  void onError(kimrt::Status status) override {
+    result_.set_value(Outcome{{}, std::nullopt, std::move(status)});
+  }
+
+private:
+  std::vector<kimrt::llm::TokenId> tokens_;
+  std::promise<Outcome> result_;
+};
+
+bool parseInt32(std::string_view text, std::int32_t &value) {
+  auto const [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), value);
+  return !text.empty() && error == std::errc{} &&
+         end == text.data() + text.size();
 }
 
-void printTokens(
-    std::string_view label,
-    std::vector<tle::TokenIdType> const& tokens)
-{
-    std::cout << label << "=[";
+std::optional<Options> parseOptions(int argc, char *argv[]) {
+  if (argc < 4) {
+    std::cerr << "Usage: " << argv[0]
+              << " <engine_dir> <max_new_tokens> <token_id>...\n";
+    return std::nullopt;
+  }
 
-    for (std::size_t index = 0; index < tokens.size(); ++index)
-    {
-        if (index != 0)
-        {
-            std::cout << ", ";
-        }
+  std::int32_t maxNewTokens{0};
+  if (!parseInt32(argv[2], maxNewTokens) || maxNewTokens <= 0 ||
+      maxNewTokens > static_cast<std::int32_t>(kMaxOutputTokens)) {
+    std::cerr << "max_new_tokens must be in [1, " << kMaxOutputTokens << "]\n";
+    return std::nullopt;
+  }
 
-        std::cout << tokens[index];
+  Options options;
+  options.engine = argv[1];
+  options.maxNewTokens = static_cast<std::size_t>(maxNewTokens);
+  options.inputTokens.reserve(static_cast<std::size_t>(argc - 3));
+
+  for (int index = 3; index < argc; ++index) {
+    kimrt::llm::TokenId token{0};
+    if (!parseInt32(argv[index], token) || token < 0) {
+      std::cerr << "invalid token id: " << argv[index] << '\n';
+      return std::nullopt;
     }
+    options.inputTokens.push_back(token);
+  }
 
-    std::cout << "]\n";
+  if (options.inputTokens.size() > kMaxInputTokens ||
+      options.inputTokens.size() + options.maxNewTokens > kMaxSequenceTokens) {
+    std::cerr << "input token count exceeds Engine limits\n";
+    return std::nullopt;
+  }
+  return options;
 }
 
-std::string_view finishReasonName(tle::FinishReason reason)
-{
-    switch (reason)
-    {
-    case tle::FinishReason::kNOT_FINISHED:
-        return "not_finished";
-    case tle::FinishReason::kEND_ID:
-        return "end_id";
-    case tle::FinishReason::kSTOP_WORDS:
-        return "stop_words";
-    case tle::FinishReason::kLENGTH:
-        return "length";
-    case tle::FinishReason::kTIMED_OUT:
-        return "timed_out";
-    case tle::FinishReason::kCANCELLED:
-        return "cancelled";
-    }
-
-    return "unknown";
+std::string_view finishReasonName(kimrt::llm::FinishReason reason) {
+  using kimrt::llm::FinishReason;
+  switch (reason) {
+  case FinishReason::Eos:
+    return "end_id";
+  case FinishReason::Length:
+    return "length";
+  case FinishReason::Stop:
+    return "stop_words";
+  case FinishReason::Cancelled:
+    return "cancelled";
+  case FinishReason::Timeout:
+    return "timed_out";
+  }
+  return "unknown";
 }
 
-void printUsage(char const* program)
-{
-    std::cerr
-        << "Usage: " << program
-        << " <engine_dir> <max_new_tokens> <token_id>...\n"
-        << "Example: " << program
-        << " /path/to/engine 5 1 2 3 4\n";
+void printTokens(std::string_view label,
+                 std::vector<kimrt::llm::TokenId> const &tokens) {
+  std::cout << label << "=[";
+  for (std::size_t index = 0; index < tokens.size(); ++index) {
+    std::cout << (index == 0 ? "" : ", ") << tokens[index];
+  }
+  std::cout << "]\n";
 }
 
 } // namespace
 
-int main(int argc, char* argv[])
-{
-    if (argc < 4)
-    {
-        printUsage(argv[0]);
-        return 2;
-    }
+int main(int argc, char *argv[]) {
+  auto options = parseOptions(argc, argv);
+  if (!options) {
+    return 2;
+  }
 
-    fs::path const engineDir{argv[1]};
+  kimrt::llm::TrtLlmBackendConfig config;
+  config.engine_dir = options->engine;
+  config.max_input_tokens = kMaxInputTokens;
+  config.max_sequence_tokens = kMaxSequenceTokens;
+  config.max_output_tokens = kMaxOutputTokens;
 
-    if (!fs::is_directory(engineDir))
-    {
-        std::cerr
-            << "Invalid Engine directory: "
-            << engineDir << '\n';
-        return 2;
-    }
+  kimrt::llm::TrtLlmExecutorBackend backend{std::move(config)};
 
-    if (!fs::is_regular_file(engineDir / "config.json"))
-    {
-        std::cerr
-            << "Engine config.json does not exist: "
-            << engineDir / "config.json" << '\n';
-        return 2;
-    }
+  auto const loadBegin = std::chrono::steady_clock::now();
+  auto const startStatus = backend.start();
+  auto const loadEnd = std::chrono::steady_clock::now();
+  if (!startStatus) {
+    std::cerr << "failed to start LLM backend: " << startStatus.message << '\n';
+    return 3;
+  }
 
-    tle::SizeType32 maxNewTokens{0};
+  auto sink = std::make_shared<FutureSink>();
+  auto result = sink->getFuture();
 
-    if (!parseInt32(argv[2], maxNewTokens)
-        || maxNewTokens <= 0
-        || maxNewTokens > kMaxOutputTokens)
-    {
-        std::cerr
-            << "max_new_tokens must be an integer in [1, "
-            << kMaxOutputTokens << "]\n";
-        return 2;
-    }
+  kimrt::llm::GenerationRequest request;
+  request.context.request_id = kRequestId;
+  request.model_name = "tinyllama";
+  request.input_token_ids = options->inputTokens;
+  request.max_new_tokens = options->maxNewTokens;
+  request.sampling.top_k = 1;
+  request.sampling.random_seed = 0;
 
-    tle::VecTokens inputTokens;
-    inputTokens.reserve(static_cast<std::size_t>(argc - 3));
+  auto const requestBegin = std::chrono::steady_clock::now();
+  auto const submitStatus = backend.submit(std::move(request), sink);
+  if (!submitStatus) {
+    std::cerr << "failed to submit request: " << submitStatus.message << '\n';
+    backend.stop();
+    return 3;
+  }
 
-    for (int index = 3; index < argc; ++index)
-    {
-        tle::TokenIdType tokenId{0};
+  if (result.wait_for(kRequestTimeout) != std::future_status::ready) {
+    backend.cancel(kRequestId);
+    backend.stop();
+    std::cerr << "LLM request timed out\n";
+    return 3;
+  }
 
-        if (!parseInt32(argv[index], tokenId) || tokenId < 0)
-        {
-            std::cerr
-                << "Invalid token id: "
-                << argv[index] << '\n';
-            return 2;
-        }
+  auto outcome = result.get();
+  auto const requestEnd = std::chrono::steady_clock::now();
+  backend.stop();
 
-        inputTokens.push_back(tokenId);
-    }
+  if (outcome.error) {
+    std::cerr << "LLM inference failed: " << outcome.error->message << '\n';
+    return 3;
+  }
+  if (!outcome.finishReason) {
+    std::cerr << "LLM inference returned no finish reason\n";
+    return 3;
+  }
 
-    if (inputTokens.empty())
-    {
-        std::cerr << "At least one input token is required\n";
-        return 2;
-    }
-
-    if (inputTokens.size() > kMaxInputTokens)
-    {
-        std::cerr
-            << "Input token count exceeds Engine limit "
-            << kMaxInputTokens << '\n';
-        return 2;
-    }
-
-    auto const totalTokens
-        = inputTokens.size()
-        + static_cast<std::size_t>(maxNewTokens);
-
-    if (totalTokens > kMaxSequenceTokens)
-    {
-        std::cerr
-            << "input_tokens + max_new_tokens exceeds Engine limit "
-            << kMaxSequenceTokens << '\n';
-        return 2;
-    }
-
-    try
-    {
-        initTrtLlmPlugins();
-
-        auto const engineLoadStart
-            = std::chrono::steady_clock::now();
-
-        tle::ExecutorConfig executorConfig{kBeamWidth};
-
-        tle::Executor executor{
-            engineDir,
-            tle::ModelType::kDECODER_ONLY,
-            executorConfig,
-        };
-
-        auto const engineLoadEnd
-            = std::chrono::steady_clock::now();
-
-        /*
-        * TensorRT-LLM 0.16 requires temperature > 0 when explicitly set.
-        * top_k=1 already gives deterministic greedy generation, so the
-        * temperature field is left at its valid default.
-        */
-        tle::SamplingConfig samplingConfig{kBeamWidth};
-        samplingConfig.setTopK(1);
-        samplingConfig.setSeed(0);
-
-        tle::Request request{
-            inputTokens,
-            maxNewTokens,
-            false,
-            samplingConfig,
-        };
-
-        auto const requestStart
-            = std::chrono::steady_clock::now();
-
-        auto const requestId = executor.enqueueRequest(request);
-
-        auto const responses = executor.awaitResponses(
-            requestId,
-            std::chrono::milliseconds{180000});
-
-        auto const requestEnd
-            = std::chrono::steady_clock::now();
-
-        bool foundFinalResponse{false};
-        tle::VecTokens outputTokens;
-        std::optional<tle::FinishReason> finishReason;
-
-        for (auto const& response : responses)
-        {
-            if (response.getRequestId() != requestId)
-            {
-                throw std::runtime_error(
-                    "Executor returned an unexpected request id");
-            }
-
-            if (response.hasError())
-            {
-                throw std::runtime_error(response.getErrorMsg());
-            }
-
-            auto const& result = response.getResult();
-
-            if (!result.isFinal)
-            {
-                continue;
-            }
-
-            if (result.outputTokenIds.empty())
-            {
-                throw std::runtime_error(
-                    "Final response contains no output beam");
-            }
-
-            outputTokens = result.outputTokenIds.front();
-
-            if (!result.finishReasons.empty())
-            {
-                finishReason = result.finishReasons.front();
-            }
-
-            foundFinalResponse = true;
-        }
-
-        if (!foundFinalResponse)
-        {
-            throw std::runtime_error(
-                "No final response received before timeout");
-        }
-
-        auto const engineLoadMs
-            = std::chrono::duration<double, std::milli>(
-                engineLoadEnd - engineLoadStart)
-                .count();
-
-        auto const requestLatencyMs
-            = std::chrono::duration<double, std::milli>(
-                requestEnd - requestStart)
-                .count();
-
-        std::cout << "request_id=" << requestId << '\n';
-        printTokens("input_tokens", inputTokens);
-        printTokens("output_tokens", outputTokens);
-
-        std::cout
-            << "finish_reason="
-            << (finishReason.has_value()
-                    ? finishReasonName(*finishReason)
-                    : "unknown")
+  std::cout << "request_id=" << kRequestId << '\n';
+  printTokens("input_tokens", options->inputTokens);
+  printTokens("output_tokens", outcome.tokens);
+  std::cout << "finish_reason=" << finishReasonName(*outcome.finishReason)
             << '\n';
-
-        std::cout
-            << "engine_load_ms=" << engineLoadMs << '\n'
-            << "request_latency_ms=" << requestLatencyMs << '\n';
-
-        return 0;
-    }
-    catch (std::exception const& exception)
-    {
-        std::cerr
-            << "LLM inference failed: "
-            << exception.what() << '\n';
-        return 3;
-    }
+  std::cout
+      << "engine_load_ms="
+      << std::chrono::duration<double, std::milli>(loadEnd - loadBegin).count()
+      << '\n';
+  std::cout << "request_latency_ms="
+            << std::chrono::duration<double, std::milli>(requestEnd -
+                                                         requestBegin)
+                   .count()
+            << '\n';
+  return 0;
 }
