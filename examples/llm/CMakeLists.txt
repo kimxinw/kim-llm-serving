@@ -183,6 +183,48 @@ target_link_libraries(
 
 if(BUILD_TESTING)
     add_executable(
+        llm_generation_mailbox_test
+        "${KIMRT_ROOT}/tests/llm_generation_mailbox_test.cpp"
+        "${KIMRT_ROOT}/src/models/llm/generation_mailbox.cpp"
+    )
+
+    target_include_directories(
+        llm_generation_mailbox_test
+        PRIVATE
+            "${KIMRT_ROOT}/include"
+    )
+
+    target_compile_definitions(
+        llm_generation_mailbox_test
+        PRIVATE
+            _GLIBCXX_USE_CXX11_ABI=0
+    )
+
+    target_compile_options(
+        llm_generation_mailbox_test
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    target_link_libraries(
+        llm_generation_mailbox_test
+        PRIVATE
+            Threads::Threads
+    )
+
+    add_test(
+        NAME llm_generation_mailbox_contract
+        COMMAND llm_generation_mailbox_test
+    )
+
+    set_tests_properties(
+        llm_generation_mailbox_contract
+        PROPERTIES
+            TIMEOUT 10
+    )
+    add_executable(
         llm_generation_types_test
         "${KIMRT_ROOT}/tests/llm_generation_types_test.cpp"
     )
