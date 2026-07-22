@@ -112,7 +112,10 @@ std::string_view finishReasonName(kimrt::llm::FinishReason reason) {
     return "cancelled";
   case FinishReason::Timeout:
     return "timed_out";
+  case FinishReason::Backpressure:
+    return "backpressure";
   }
+  
   return "unknown";
 }
 
@@ -154,7 +157,6 @@ int main(int argc, char *argv[]) {
 
   kimrt::llm::GenerationRequest request;
   request.context.request_id = kRequestId;
-  request.model_name = "tinyllama";
   request.input_token_ids = options->inputTokens;
   request.max_new_tokens = options->maxNewTokens;
   request.sampling.top_k = 1;

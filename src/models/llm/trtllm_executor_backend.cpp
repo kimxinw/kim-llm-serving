@@ -56,6 +56,19 @@ bool hasNegativeToken(std::vector<TokenId> const &tokens) {
                      [](TokenId token) { return token < 0; });
 }
 
+bool hasInvalidStopSequence(StopSequence const & sequence){
+  return sequence.empty() || hasNegativeToken(sequence);
+}
+
+bool hasInvalidStopSequences(
+      std::vector<StopSequence> const &stopSequences) {
+    return std::any_of(
+        stopSequences.begin(), stopSequences.end(),
+        [](StopSequence const &sequence) {
+          return hasInvalidStopSequence(sequence);
+        });
+}
+
 } // namespace
 
 struct TrtLlmExecutorBackend::Impl {
@@ -275,10 +288,14 @@ private:
       return failure(StatusCode::InvalidInput, "invalid sampling parameters");
     }
     if ((request.end_id && *request.end_id < 0) ||
-        (request.pad_id && *request.pad_id < 0) ||
-        hasNegativeToken(request.stop_token_ids)) {
+        (request.pad_id && *request.pad_id < 0)) {
       return failure(StatusCode::InvalidInput, "invalid special token id");
     }
+
+    if (hasInvalidStopSequences(request.stop_sequences)) {
+      return failure(StatusCode::InvalidInput, "invalid stop sequence");
+    }
+    
     if (request.context.hasDeadline() &&
         request.context.deadline <= std::chrono::steady_clock::now()) {
       return failure(StatusCode::Timeout, "request deadline has expired");
@@ -304,13 +321,16 @@ private:
     if (request.pad_id) {
       result.setPadId(*request.pad_id);
     }
-    if (!request.stop_token_ids.empty()) {
+    if (!request.stop_sequences.empty()) {
       std::list<tle::VecTokens> stopWords;
-      for (auto token : request.stop_token_ids) {
-        stopWords.push_back({token});
+
+      for (auto const &sequence : request.stop_sequences) {
+        stopWords.emplace_back(sequence.begin(), sequence.end());
       }
+ 
       result.setStopWords(stopWords);
     }
+
     if (request.context.hasDeadline()) {
       auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
           request.context.deadline - std::chrono::steady_clock::now());

@@ -102,7 +102,6 @@ private:
 GenerationRequest makeRequest(std::uint64_t requestId) {
   GenerationRequest request;
   request.context.request_id = requestId;
-  request.model_name = "tinyllama";
   request.input_token_ids = {1, 2, 3, 4};
   request.max_new_tokens = 5;
   request.sampling.top_k = 1;

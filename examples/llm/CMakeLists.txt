@@ -182,6 +182,41 @@ target_link_libraries(
 )
 
 if(BUILD_TESTING)
+    add_executable(
+        llm_generation_types_test
+        "${KIMRT_ROOT}/tests/llm_generation_types_test.cpp"
+    )
+    target_include_directories(
+        llm_generation_types_test
+        PRIVATE
+            "${KIMRT_ROOT}/include"
+    )
+
+    target_compile_definitions(
+        llm_generation_types_test
+        PRIVATE
+            _GLIBCXX_USE_CXX11_ABI=0
+    )
+
+    target_compile_options(
+        llm_generation_types_test
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    add_test(
+        NAME llm_generation_types_contract
+        COMMAND llm_generation_types_test
+    )
+
+    set_tests_properties(
+        llm_generation_types_contract
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     set(
         KIMRT_LLM_TEST_ENGINE_DIR
         ""
