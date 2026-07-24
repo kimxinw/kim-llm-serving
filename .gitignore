@@ -1,0 +1,30 @@
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+
+# Local Markdown documentation
+*.md
+
+# CMake build trees and generated metadata
+build*/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Testing/
+cmake_install.cmake
+compile_commands.json
+Makefile
+
+# Runtime logs and benchmark outputs
+*.log
+benchmark/results/
+
+# Model and engine artifacts
+models/
+*.bin
+*.engine
+*.onnx
+*.plan
+*.safetensors

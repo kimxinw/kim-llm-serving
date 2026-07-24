@@ -1,14 +1,10 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(kimrt_llm_l1 LANGUAGES CXX)
+project(kim_llm_serving LANGUAGES CXX)
 
 include(CTest)
 
-get_filename_component(
-    KIMRT_ROOT
-    "${CMAKE_CURRENT_LIST_DIR}/../.."
-    ABSOLUTE
-)
+set(KIMRT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -159,7 +155,7 @@ target_link_libraries(
 
 add_executable(
     llm_infer
-    llm_infer.cpp
+    "${KIMRT_ROOT}/examples/llm_infer.cpp"
 )
 
 target_compile_options(
