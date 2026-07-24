@@ -67,16 +67,4 @@ namespace kimrt::llm {
 
     using GenerationEvent = std::variant<TokenDelta,TerminalEvent>;
 
-    /*
-    *A1-A3期间保留的旧的sink交付类型
-    *
-    * 它不属于最终 GenerationEvent 契约，将在A4使用
-    * GenerationMailbox替换 GenerationSink时删除
-    */
-
-    struct TokenChunk {
-        std::uint64_t request_id{0};
-        std::vector<TokenId>token_ids;
-    };
-
 }//namespcace kimrt::llm

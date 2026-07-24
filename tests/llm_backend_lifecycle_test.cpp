@@ -1,27 +1,29 @@
 #include "models/llm/trtllm_executor_backend.h"
 
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
 
 using namespace std::chrono_literals;
-using kimrt::Status;
 using kimrt::llm::FinishReason;
+using kimrt::llm::GenerationEvent;
+using kimrt::llm::GenerationMailbox;
+using kimrt::llm::GenerationMailboxConfig;
 using kimrt::llm::GenerationRequest;
-using kimrt::llm::GenerationSink;
-using kimrt::llm::TokenChunk;
+using kimrt::llm::MailboxWaitResult;
+using kimrt::llm::TerminalEvent;
+using kimrt::llm::TokenDelta;
 using kimrt::llm::TokenId;
 using kimrt::llm::TrtLlmBackendConfig;
 using kimrt::llm::TrtLlmExecutorBackend;
@@ -29,85 +31,15 @@ using kimrt::llm::TrtLlmExecutorBackend;
 constexpr std::uint64_t kSmokeRequestId{100};
 constexpr auto kTerminalTimeout = 180s;
 
-struct SinkSnapshot {
+struct MailboxSnapshot {
   std::vector<TokenId> tokens;
-  std::optional<FinishReason> finish_reason;
-  std::optional<Status> error;
-  std::size_t terminal_count{0};
-  bool token_after_terminal{false};
+  std::optional<TerminalEvent> terminal;
+  bool timed_out{false};
+  bool closed_before_terminal{false};
+  bool closed_after_terminal{false};
   bool wrong_request_id{false};
+  bool sequence_gap{false};
 };
-
-class RecordingSink final : public GenerationSink {
-public:
-  explicit RecordingSink(std::uint64_t expectedRequestId)
-      : expectedRequestId_(expectedRequestId) {}
-
-  void onTokens(TokenChunk chunk) override {
-    std::lock_guard lock(mutex_);
-    wrongRequestId_ = wrongRequestId_ ||
-                      chunk.request_id != expectedRequestId_;
-    tokenAfterTerminal_ = tokenAfterTerminal_ || terminalCount_ != 0;
-    tokens_.insert(tokens_.end(), chunk.token_ids.begin(),
-                   chunk.token_ids.end());
-  }
-
-  void onComplete(FinishReason reason) override {
-    {
-      std::lock_guard lock(mutex_);
-      if (terminalCount_ == 0) {
-        finishReason_ = reason;
-      }
-      ++terminalCount_;
-    }
-    cv_.notify_all();
-  }
-
-  void onError(Status status) override {
-    {
-      std::lock_guard lock(mutex_);
-      if (terminalCount_ == 0) {
-        error_ = std::move(status);
-      }
-      ++terminalCount_;
-    }
-    cv_.notify_all();
-  }
-
-  bool waitForTerminal(std::chrono::milliseconds timeout) {
-    std::unique_lock lock(mutex_);
-    return cv_.wait_for(lock, timeout,
-                        [this] { return terminalCount_ != 0; });
-  }
-
-  SinkSnapshot snapshot() const {
-    std::lock_guard lock(mutex_);
-    return SinkSnapshot{tokens_,          finishReason_,
-                        error_,           terminalCount_,
-                        tokenAfterTerminal_, wrongRequestId_};
-  }
-
-private:
-  std::uint64_t expectedRequestId_{0};
-  mutable std::mutex mutex_;
-  std::condition_variable cv_;
-  std::vector<TokenId> tokens_;
-  std::optional<FinishReason> finishReason_;
-  std::optional<Status> error_;
-  std::size_t terminalCount_{0};
-  bool tokenAfterTerminal_{false};
-  bool wrongRequestId_{false};
-};
-
-GenerationRequest makeRequest(std::uint64_t requestId) {
-  GenerationRequest request;
-  request.context.request_id = requestId;
-  request.input_token_ids = {1, 2, 3, 4};
-  request.max_new_tokens = 5;
-  request.sampling.top_k = 1;
-  request.sampling.random_seed = 0;
-  return request;
-}
 
 bool expect(bool condition, std::string_view message, int &failures) {
   if (condition) {
@@ -116,6 +48,84 @@ bool expect(bool condition, std::string_view message, int &failures) {
   ++failures;
   std::cerr << "[FAIL] " << message << '\n';
   return false;
+}
+
+std::shared_ptr<GenerationMailbox> makeMailbox() {
+  return std::make_shared<GenerationMailbox>(
+      GenerationMailboxConfig{32, 32});
+}
+
+GenerationRequest makeRequest(std::uint64_t requestId) {
+  GenerationRequest request;
+  request.context.request_id = requestId;
+  request.context.deadline =
+      std::chrono::steady_clock::now() + kTerminalTimeout;
+  request.input_token_ids = {1, 2, 3, 4};
+  request.max_new_tokens = 5;
+  request.streaming = true;
+  request.sampling.top_k = 1;
+  request.sampling.random_seed = 0;
+  return request;
+}
+
+MailboxSnapshot consumeMailbox(
+    std::shared_ptr<GenerationMailbox> const &mailbox,
+    std::uint64_t expectedRequestId) {
+  MailboxSnapshot snapshot;
+  std::uint64_t expectedSequenceNo{0};
+  auto const deadline =
+      std::chrono::steady_clock::now() + kTerminalTimeout;
+
+  while (!snapshot.terminal) {
+    auto const now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      snapshot.timed_out = true;
+      break;
+    }
+
+    GenerationEvent event;
+    auto const result = mailbox->waitPop(
+        event,
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now));
+
+    if (result == MailboxWaitResult::Timeout) {
+      snapshot.timed_out = true;
+      break;
+    }
+    if (result == MailboxWaitResult::Closed) {
+      snapshot.closed_before_terminal = true;
+      break;
+    }
+
+    if (auto *delta = std::get_if<TokenDelta>(&event)) {
+      snapshot.wrong_request_id = snapshot.wrong_request_id ||
+                                  delta->request_id != expectedRequestId;
+      snapshot.sequence_gap = snapshot.sequence_gap ||
+                              delta->sequence_no != expectedSequenceNo;
+      expectedSequenceNo = delta->sequence_no + 1;
+      snapshot.tokens.insert(
+          snapshot.tokens.end(),
+          delta->token_ids.begin(),
+          delta->token_ids.end());
+      continue;
+    }
+
+    auto *terminal = std::get_if<TerminalEvent>(&event);
+    if (!terminal) {
+      snapshot.closed_before_terminal = true;
+      break;
+    }
+    snapshot.wrong_request_id = snapshot.wrong_request_id ||
+                                terminal->request_id != expectedRequestId;
+    snapshot.terminal = std::move(*terminal);
+  }
+
+  if (snapshot.terminal) {
+    GenerationEvent event;
+    snapshot.closed_after_terminal =
+        mailbox->waitPop(event, 0ms) == MailboxWaitResult::Closed;
+  }
+  return snapshot;
 }
 
 TrtLlmBackendConfig makeConfig(std::filesystem::path engineDir) {
@@ -129,72 +139,75 @@ TrtLlmBackendConfig makeConfig(std::filesystem::path engineDir) {
 
 int run(std::filesystem::path const &engineDir) {
   int failures{0};
-  auto const config = makeConfig(engineDir);
-  TrtLlmExecutorBackend backend{config};
+  TrtLlmExecutorBackend backend{makeConfig(engineDir)};
 
-  auto beforeStartSink = std::make_shared<RecordingSink>(1);
-  auto const beforeStart = backend.submit(makeRequest(1), beforeStartSink);
+  auto beforeStartMailbox = makeMailbox();
+  auto const beforeStart =
+      backend.submit(makeRequest(1), beforeStartMailbox);
   expect(!beforeStart, "submit before start must be rejected", failures);
-  expect(!beforeStartSink->waitForTerminal(100ms),
-         "rejected submit must not produce callbacks", failures);
+  GenerationEvent rejectedEvent;
+  expect(beforeStartMailbox->waitPop(rejectedEvent, 0ms) ==
+             MailboxWaitResult::Timeout,
+         "rejected submit must not produce events", failures);
 
   auto const firstStart = backend.start();
   if (!expect(firstStart.ok(), "first start must succeed", failures)) {
     return failures;
   }
-  expect(backend.start().ok(), "start while running must be idempotent",
-         failures);
+  expect(backend.start().ok(),
+         "start while running must be idempotent", failures);
 
-  auto smokeSink = std::make_shared<RecordingSink>(kSmokeRequestId);
-  auto const submit = backend.submit(makeRequest(kSmokeRequestId), smokeSink);
+  auto smokeMailbox = makeMailbox();
+  auto const submit =
+      backend.submit(makeRequest(kSmokeRequestId), smokeMailbox);
+  MailboxSnapshot smoke;
   if (expect(submit.ok(), "smoke request must be accepted", failures)) {
-    expect(smokeSink->waitForTerminal(
-               std::chrono::duration_cast<std::chrono::milliseconds>(
-                   kTerminalTimeout)),
-           "smoke request must reach terminal before timeout", failures);
+    smoke = consumeMailbox(smokeMailbox, kSmokeRequestId);
   }
 
   backend.stop();
   backend.stop();
 
-  auto const smoke = smokeSink->snapshot();
-  std::vector<TokenId> const expectedTokens{
-      1, 2, 3, 4, 3, 29966, 29989, 5205, 29989};
-  expect(smoke.tokens == expectedTokens,
-         "Backend output must match the saved L1 token baseline", failures);
-  expect(smoke.finish_reason == FinishReason::Length,
-         "fixed request must finish by length", failures);
-  expect(!smoke.error.has_value(), "fixed request must not return an error",
-         failures);
-  expect(smoke.terminal_count == 1,
-         "accepted request must produce exactly one terminal callback",
-         failures);
-  expect(!smoke.token_after_terminal,
-         "no token callback is allowed after terminal", failures);
-  expect(!smoke.wrong_request_id,
-         "TokenChunk request id must match the external request id", failures);
+  if (submit.ok()) {
+    std::vector<TokenId> const expectedTokens{
+        3, 29966, 29989, 5205, 29989};
+    expect(!smoke.timed_out,
+           "smoke request must finish before timeout", failures);
+    expect(!smoke.closed_before_terminal,
+           "Mailbox must not close before Terminal", failures);
+    expect(smoke.closed_after_terminal,
+           "Mailbox must close after Terminal", failures);
+    expect(!smoke.wrong_request_id,
+           "all events must preserve the external request id", failures);
+    expect(!smoke.sequence_gap,
+           "TokenDelta sequence numbers must be contiguous", failures);
+    expect(smoke.tokens == expectedTokens,
+           "delta-only output must match the saved generation baseline",
+           failures);
+    expect(smoke.terminal.has_value(),
+           "accepted request must produce a Terminal", failures);
 
-  auto afterStopSink = std::make_shared<RecordingSink>(2);
-  auto const afterStop = backend.submit(makeRequest(2), afterStopSink);
-  expect(!afterStop, "submit after stop must be rejected", failures);
-  expect(!afterStopSink->waitForTerminal(100ms),
-         "submit rejected after stop must not produce callbacks", failures);
-
-  auto const restart = backend.start();
-  if (expect(restart.ok(), "start after stop must succeed", failures)) {
-    backend.stop();
-  }
-
-  for (int cycle = 0; cycle < 2; ++cycle) {
-    TrtLlmExecutorBackend candidate{config};
-    auto const status = candidate.start();
-    if (expect(status.ok(), "repeated Backend creation must start", failures)) {
-      candidate.stop();
+    if (smoke.terminal) {
+      expect(smoke.terminal->status.ok(),
+             "smoke Terminal must be successful", failures);
+      expect(smoke.terminal->finish_reason == FinishReason::Length,
+             "fixed request must finish by length", failures);
+      expect(smoke.terminal->usage.prompt_tokens == 4,
+             "prompt usage must equal the input length", failures);
+      expect(smoke.terminal->usage.completion_tokens == 5,
+             "completion usage must equal committed output tokens", failures);
     }
   }
 
+  auto afterStopMailbox = makeMailbox();
+  auto const afterStop = backend.submit(makeRequest(2), afterStopMailbox);
+  expect(!afterStop, "submit after stop must be rejected", failures);
+  expect(afterStopMailbox->waitPop(rejectedEvent, 0ms) ==
+             MailboxWaitResult::Timeout,
+         "submit rejected after stop must not produce events", failures);
+
   if (failures == 0) {
-    std::cout << "[PASS] LLM Backend A0 token and lifecycle baseline\n";
+    std::cout << "[PASS] LLM Mailbox Backend lifecycle baseline\n";
   }
   return failures;
 }

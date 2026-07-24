@@ -26,7 +26,7 @@ namespace kimrt::llm {
         TrtLlmExecutorBackend& operator = (TrtLlmExecutorBackend&&) = delete;
 
         Status start()override;
-        Status submit(GenerationRequest request,std::shared_ptr<GenerationSink>sink)override;
+        Status submit(GenerationRequest request,std::shared_ptr<GenerationMailbox>mailbox)override;
         
         void cancel(std::uint64_t request_id) override;
 

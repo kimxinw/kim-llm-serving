@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/status.h"
-#include "models/llm/generation_sink.h"
+#include "models/llm/generation_mailbox.h"
 #include "models/llm/generation_types.h"
 
 #include <cstdint>
@@ -14,7 +14,7 @@ public:
     virtual Status start() = 0;
     virtual Status submit(
             GenerationRequest request,
-            std::shared_ptr<GenerationSink> sink
+            std::shared_ptr<GenerationMailbox> mailbox
     ) = 0;
 
     virtual void cancel(std::uint64_t request_id) = 0;

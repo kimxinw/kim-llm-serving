@@ -109,8 +109,9 @@ get_filename_component(
 add_library(
     kimrt_llm
     STATIC
+    "${KIMRT_ROOT}/src/models/llm/generation_mailbox.cpp"
+    "${KIMRT_ROOT}/src/models/llm/request_state.cpp"
     "${KIMRT_ROOT}/src/models/llm/trtllm_executor_backend.cpp"
-    "${KIMRT_ROOT}/src/core/serial_executor.cpp"
 )
 
 target_include_directories(
@@ -182,6 +183,7 @@ target_link_libraries(
 )
 
 if(BUILD_TESTING)
+    # mailbox-test
     add_executable(
         llm_generation_mailbox_test
         "${KIMRT_ROOT}/tests/llm_generation_mailbox_test.cpp"
@@ -224,6 +226,52 @@ if(BUILD_TESTING)
         PROPERTIES
             TIMEOUT 10
     )
+
+    # reqeust_state-test
+
+    add_executable(
+        llm_request_state_test
+        "${KIMRT_ROOT}/tests/llm_request_state_test.cpp"
+        "${KIMRT_ROOT}/src/models/llm/request_state.cpp"
+        "${KIMRT_ROOT}/src/models/llm/generation_mailbox.cpp"
+    )
+    target_include_directories(
+        llm_request_state_test
+        PRIVATE
+            "${KIMRT_ROOT}/include"
+    )
+
+    target_compile_definitions(
+        llm_request_state_test
+        PRIVATE
+            _GLIBCXX_USE_CXX11_ABI=0
+    )
+
+    target_compile_options(
+        llm_request_state_test
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    target_link_libraries(
+        llm_request_state_test
+        PRIVATE
+            Threads::Threads
+    )
+
+    add_test(
+        NAME llm_request_state_contract
+        COMMAND llm_request_state_test
+    )
+
+    set_tests_properties(
+        llm_request_state_contract
+        PROPERTIES
+            TIMEOUT 10
+    )
+    # generation_types-test
     add_executable(
         llm_generation_types_test
         "${KIMRT_ROOT}/tests/llm_generation_types_test.cpp"

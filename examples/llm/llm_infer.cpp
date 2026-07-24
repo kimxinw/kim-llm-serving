@@ -4,14 +4,14 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
-#include <future>
 #include <iostream>
-#include <iterator>
 #include <optional>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
+#include <memory>
+#include <variant>
 
 namespace {
 
@@ -27,34 +27,6 @@ struct Options {
   std::vector<kimrt::llm::TokenId> inputTokens;
 };
 
-struct Outcome {
-  std::vector<kimrt::llm::TokenId> tokens;
-  std::optional<kimrt::llm::FinishReason> finishReason;
-  std::optional<kimrt::Status> error;
-};
-
-class FutureSink final : public kimrt::llm::GenerationSink {
-public:
-  std::future<Outcome> getFuture() { return result_.get_future(); }
-
-  void onTokens(kimrt::llm::TokenChunk chunk) override {
-    tokens_.insert(tokens_.end(),
-                   std::make_move_iterator(chunk.token_ids.begin()),
-                   std::make_move_iterator(chunk.token_ids.end()));
-  }
-
-  void onComplete(kimrt::llm::FinishReason reason) override {
-    result_.set_value(Outcome{std::move(tokens_), reason, std::nullopt});
-  }
-
-  void onError(kimrt::Status status) override {
-    result_.set_value(Outcome{{}, std::nullopt, std::move(status)});
-  }
-
-private:
-  std::vector<kimrt::llm::TokenId> tokens_;
-  std::promise<Outcome> result_;
-};
 
 bool parseInt32(std::string_view text, std::int32_t &value) {
   auto const [end, error] =
@@ -152,57 +124,170 @@ int main(int argc, char *argv[]) {
     return 3;
   }
 
-  auto sink = std::make_shared<FutureSink>();
-  auto result = sink->getFuture();
+  auto mailbox = std::make_shared<kimrt::llm::GenerationMailbox>(
+    kimrt::llm::GenerationMailboxConfig{
+      kMaxOutputTokens,
+      kMaxOutputTokens
+    }
+  );
 
   kimrt::llm::GenerationRequest request;
   request.context.request_id = kRequestId;
   request.input_token_ids = options->inputTokens;
   request.max_new_tokens = options->maxNewTokens;
+  request.streaming = true;
   request.sampling.top_k = 1;
   request.sampling.random_seed = 0;
 
   auto const requestBegin = std::chrono::steady_clock::now();
-  auto const submitStatus = backend.submit(std::move(request), sink);
+  auto const requestDeadline = requestBegin + kRequestTimeout;
+
+  request.context.deadline = requestDeadline;
+
+  auto const submitStatus =
+      backend.submit(std::move(request), mailbox);
+
   if (!submitStatus) {
-    std::cerr << "failed to submit request: " << submitStatus.message << '\n';
+    std::cerr
+        << "failed to submit request: "
+        << submitStatus.message
+        << '\n';
+
     backend.stop();
     return 3;
   }
 
-  if (result.wait_for(kRequestTimeout) != std::future_status::ready) {
-    backend.cancel(kRequestId);
-    backend.stop();
-    std::cerr << "LLM request timed out\n";
-    return 3;
+  std::vector<kimrt::llm::TokenId> outputTokens;
+  std::optional<kimrt::llm::TerminalEvent> terminal;
+  std::uint64_t expectedSequenceNo{0};
+
+  while (!terminal) {
+    auto const now = std::chrono::steady_clock::now();
+
+    if (now >= requestDeadline) {
+      backend.cancel(kRequestId);
+      backend.stop();
+
+      std::cerr << "LLM request timed out\n";
+      return 3;
+    }
+
+    kimrt::llm::GenerationEvent event;
+
+    auto const waitResult = mailbox->waitPop(
+        event,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            requestDeadline - now));
+
+    if (waitResult ==
+        kimrt::llm::MailboxWaitResult::Timeout) {
+      backend.cancel(kRequestId);
+      backend.stop();
+
+      std::cerr << "LLM request timed out\n";
+      return 3;
+    }
+
+    if (waitResult ==
+        kimrt::llm::MailboxWaitResult::Closed) {
+      backend.cancel(kRequestId);
+      backend.stop();
+
+      std::cerr
+          << "generation mailbox closed before Terminal\n";
+      return 3;
+    }
+
+    if (auto *delta =
+            std::get_if<kimrt::llm::TokenDelta>(&event)) {
+      if (delta->request_id != kRequestId) {
+        backend.cancel(kRequestId);
+        backend.stop();
+
+        std::cerr
+            << "TokenDelta contains an unexpected request id\n";
+        return 3;
+      }
+
+      if (delta->sequence_no != expectedSequenceNo) {
+        backend.cancel(kRequestId);
+        backend.stop();
+
+        std::cerr
+            << "TokenDelta sequence is not contiguous\n";
+        return 3;
+      }
+
+      ++expectedSequenceNo;
+
+      outputTokens.insert(
+          outputTokens.end(),
+          delta->token_ids.begin(),
+          delta->token_ids.end());
+
+      printTokens("delta_tokens", delta->token_ids);
+      continue;
+    }
+
+    auto *terminalEvent =
+        std::get_if<kimrt::llm::TerminalEvent>(&event);
+
+    if (!terminalEvent) {
+      backend.cancel(kRequestId);
+      backend.stop();
+
+      std::cerr << "unknown generation event\n";
+      return 3;
+    }
+
+    if (terminalEvent->request_id != kRequestId) {
+      backend.cancel(kRequestId);
+      backend.stop();
+
+      std::cerr
+          << "Terminal contains an unexpected request id\n";
+      return 3;
+    }
+
+    terminal = std::move(*terminalEvent);
   }
 
-  auto outcome = result.get();
-  auto const requestEnd = std::chrono::steady_clock::now();
+  auto const requestEnd =
+      std::chrono::steady_clock::now();
+
   backend.stop();
 
-  if (outcome.error) {
-    std::cerr << "LLM inference failed: " << outcome.error->message << '\n';
+  if (!terminal->status) {
+    std::cerr
+        << "LLM inference failed: "
+        << terminal->status.message
+        << '\n';
     return 3;
   }
-  if (!outcome.finishReason) {
-    std::cerr << "LLM inference returned no finish reason\n";
+
+  if (!terminal->finish_reason) {
+    std::cerr
+        << "LLM inference returned no finish reason\n";
     return 3;
   }
 
   std::cout << "request_id=" << kRequestId << '\n';
   printTokens("input_tokens", options->inputTokens);
-  printTokens("output_tokens", outcome.tokens);
-  std::cout << "finish_reason=" << finishReasonName(*outcome.finishReason)
-            << '\n';
+  printTokens("output_tokens", outputTokens);
+
   std::cout
-      << "engine_load_ms="
-      << std::chrono::duration<double, std::milli>(loadEnd - loadBegin).count()
+      << "finish_reason="
+      << finishReasonName(*terminal->finish_reason)
       << '\n';
-  std::cout << "request_latency_ms="
-            << std::chrono::duration<double, std::milli>(requestEnd -
-                                                         requestBegin)
-                   .count()
-            << '\n';
+
+  std::cout
+      << "prompt_tokens="
+      << terminal->usage.prompt_tokens
+      << '\n';
+
+  std::cout
+      << "completion_tokens="
+      << terminal->usage.completion_tokens
+      << '\n';
   return 0;
 }
