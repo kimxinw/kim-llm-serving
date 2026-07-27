@@ -130,10 +130,13 @@ public:
 
     try {
       std::call_once(pluginInitFlag, [] { initTrtLlmPlugins(); });
-
+      tle::ExecutorConfig executorConfig{kBeamWidth};
+      // 不显式设置会退回默认 1000，长 run 的 iteration stats 会被静默截断。
+      executorConfig.setIterStatsMaxIterations(
+          static_cast<tle::SizeType32>(config_.iter_stats_max_iterations));
       auto executor = std::make_unique<tle::Executor>(
           config_.engine_dir, tle::ModelType::kDECODER_ONLY,
-          tle::ExecutorConfig{kBeamWidth});
+          executorConfig);
       {
         std::lock_guard lock(mutex_);
       executor_ = std::move(executor);
@@ -320,6 +323,48 @@ public:
     }
   }
 
+  std::vector<std::string> drainIterationStatsJson() {
+    // std::lock_guard lock(mutex_);
+
+    // if (!executor_ || state_ != State::Running) {
+    //   return {};
+    // }
+
+    // auto stats = executor_->getLatestIterationStats();
+
+    // std::vector<std::string> result;
+    // result.reserve(stats.size());
+
+    // for (auto const &stat : stats) {
+    //   result.push_back(tle::JsonSerialization::toJsonStr(stat));
+    // }
+
+    // return result;
+
+    std::deque<tle::IterationStats> stats;
+
+    {
+      std::lock_guard lock(mutex_);
+
+      if (!executor_ || state_ != State::Running) {
+        return {};
+      }
+
+      // 锁内只做 deque 交接：JSON 序列化放到锁外，避免采样线程
+      // 周期性阻塞 submit/cancel 而扰动延迟测量。
+      stats = executor_->getLatestIterationStats();
+    }
+
+    std::vector<std::string> result;
+    result.reserve(stats.size());
+
+    for (auto const &stat : stats) {
+      result.push_back(tle::JsonSerialization::toJsonStr(stat));
+    }
+
+    return result;
+  }
+
 private:
   enum class State {
     Stopped,
@@ -342,6 +387,11 @@ private:
         config_.max_input_tokens > config_.max_sequence_tokens ||
         config_.max_output_tokens > config_.max_sequence_tokens) {
       return failure(StatusCode::InvalidInput, "invalid backend token limits");
+    }
+
+    if (config_.iter_stats_max_iterations <= 0) {
+      return failure(StatusCode::InvalidInput,
+                     "iter_stats_max_iterations must be positive");
     }
     return Status::success();
   }
@@ -731,6 +781,10 @@ Status TrtLlmExecutorBackend::start() { return impl_->start(); }
 Status TrtLlmExecutorBackend::submit(GenerationRequest request,
                                      std::shared_ptr<GenerationMailbox> mailbox) {
   return impl_->submit(std::move(request), std::move(mailbox));
+}
+
+std::vector<std::string>TrtLlmExecutorBackend::drainIterationStatsJson() {
+    return impl_->drainIterationStatsJson();
 }
 
 void TrtLlmExecutorBackend::cancel(std::uint64_t requestId) {

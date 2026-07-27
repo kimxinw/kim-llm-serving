@@ -178,6 +178,31 @@ target_link_libraries(
         kimrt_llm
 )
 
+add_executable(
+    llm_direct_benchmark
+    "${KIMRT_ROOT}/benchmark/llm_direct_benchmark.cpp"
+)
+
+target_compile_options(
+    llm_direct_benchmark
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+target_link_options(
+    llm_direct_benchmark
+    PRIVATE
+        -Wl,--allow-shlib-undefined
+)
+
+target_link_libraries(
+    llm_direct_benchmark
+    PRIVATE
+        kimrt_llm
+)
+
 if(BUILD_TESTING)
     # mailbox-test
     add_executable(
@@ -223,7 +248,7 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
-    # reqeust_state-test
+    # request_state-test
 
     add_executable(
         llm_request_state_test

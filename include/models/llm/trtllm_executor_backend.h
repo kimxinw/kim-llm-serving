@@ -2,9 +2,12 @@
 
 #include "models/llm/generation_backend.h"
 
+#include <cstdint>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace kimrt::llm {
     struct TrtLlmBackendConfig {
@@ -12,6 +15,11 @@ namespace kimrt::llm {
         std::size_t max_input_tokens{512};
         std::size_t max_sequence_tokens{544};
         std::size_t max_output_tokens{32};
+        // Executor 内部 iteration stats 缓冲区的容量上限。
+        // TensorRT-LLM 默认 kDefaultIterStatsMaxIterations = 1000
+        // (executor.h:1273)，写满后静默淘汰最旧条目、不报错也不计数。
+        // 这里显式放大只是安全网；真正的保证来自调用方在测量期间周期 drain。
+        std::int32_t iter_stats_max_iterations{100000};
     };
 
     class TrtLlmExecutorBackend final: public GenerationBackend{
@@ -31,6 +39,8 @@ namespace kimrt::llm {
         void cancel(std::uint64_t request_id) override;
 
         void stop() override;
+
+        [[nodiscard]]std::vector<std::string> drainIterationStatsJson();
     private:
         struct Impl;
         std::unique_ptr<Impl> impl_;
