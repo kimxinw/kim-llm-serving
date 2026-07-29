@@ -22,7 +22,7 @@ Makefile
 benchmark/results/
 
 # Model and engine artifacts
-models/
+/models/
 *.bin
 *.engine
 *.onnx

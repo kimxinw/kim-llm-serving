@@ -105,6 +105,7 @@ get_filename_component(
 add_library(
     kimrt_llm
     STATIC
+    "${KIMRT_ROOT}/src/models/llm/admission_controller.cpp"
     "${KIMRT_ROOT}/src/models/llm/generation_mailbox.cpp"
     "${KIMRT_ROOT}/src/models/llm/request_state.cpp"
     "${KIMRT_ROOT}/src/models/llm/trtllm_executor_backend.cpp"
@@ -204,6 +205,49 @@ target_link_libraries(
 )
 
 if(BUILD_TESTING)
+    # admission_controller-test
+    add_executable(
+        llm_admission_controller_test
+        "${KIMRT_ROOT}/tests/llm_admission_controller_test.cpp"
+        "${KIMRT_ROOT}/src/models/llm/admission_controller.cpp"
+    )
+
+    target_include_directories(
+        llm_admission_controller_test
+        PRIVATE
+            "${KIMRT_ROOT}/include"
+    )
+
+    target_compile_definitions(
+        llm_admission_controller_test
+        PRIVATE
+            _GLOBAL_USE_CXX11_ABI=0
+    )
+
+    target_compile_options(
+        llm_admission_controller_test
+          PRIVATE
+              -Wall
+              -Wextra
+    )
+
+    target_link_libraries(
+        llm_admission_controller_test
+          PRIVATE
+              Threads::Threads
+    )
+
+    add_test(
+        NAME llm_admission_controller_contract
+        COMMAND llm_admission_controller_test
+    )
+
+    set_tests_properties(
+        llm_admission_controller_contract
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # mailbox-test
     add_executable(
         llm_generation_mailbox_test
