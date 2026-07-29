@@ -24,6 +24,7 @@ using kimrt::llm::MailboxWaitResult;
 using kimrt::llm::TerminalEvent;
 using kimrt::llm::TokenDelta;
 using kimrt::llm::TokenId;
+using kimrt::llm::AdmissionController;
 
 bool expect(bool condition, std::string_view message, int &failures) {
 if (condition) {
@@ -177,11 +178,119 @@ expect(!mailbox.pushTerminal(makeTerminal(9)),
         "closed Mailbox must reject Terminal", failures);
 }
 
+void testTerminalReleasesAdmissionLease(int &failures) {
+AdmissionController controller({1, 8, 8});
+
+expect(
+        controller.open(),
+        "Admission controller must open",
+        failures);
+
+auto decision = controller.tryAcquire({100, 3, 4});
+
+expect(
+        decision.admitted(),
+        "request must acquire Admission lease",
+        failures);
+
+GenerationMailbox mailbox(
+        GenerationMailboxConfig{4, 8},
+        std::move(decision.lease));
+
+auto before_terminal = controller.snapshot();
+
+expect(
+        before_terminal.active_requests == 1 &&
+        before_terminal.reserved_input_tokens == 3 &&
+        before_terminal.reserved_output_tokens == 4,
+        "Mailbox must retain Admission resources before Terminal",
+        failures);
+
+expect(
+        mailbox.pushTerminal(makeTerminal(100)),
+        "Terminal must commit successfully",
+        failures);
+
+/*
+* 不调用 waitPop()。
+* Admission 必须在 Terminal 提交时释放，而不是等消费者读取。
+*/
+auto after_terminal = controller.snapshot();
+
+expect(
+        after_terminal.active_requests == 0 &&
+        after_terminal.reserved_input_tokens == 0 &&
+        after_terminal.reserved_output_tokens == 0,
+        "Terminal commit must release Admission resources",
+        failures);
+
+expect(
+        !mailbox.pushTerminal(makeTerminal(100)),
+        "duplicate Terminal must be rejected",
+        failures);
+
+auto after_duplicate = controller.snapshot();
+
+expect(
+        after_duplicate.active_requests == 0 &&
+        after_duplicate.reserved_input_tokens == 0 &&
+        after_duplicate.reserved_output_tokens == 0,
+        "duplicate Terminal must not release resources twice",
+        failures);
+}
+
+void testMailboxDestructionReleasesAdmissionLease(int &failures) {
+        AdmissionController controller({1, 8, 8});
+
+        expect(
+                controller.open(),
+                "Admission controller for destruction test must open",
+                failures);
+
+        {
+                auto decision = controller.tryAcquire({101, 2, 3});
+
+                expect(
+                decision.admitted(),
+                "destruction-test request must acquire Admission lease",
+                failures);
+
+                GenerationMailbox mailbox(
+                GenerationMailboxConfig{4, 8},
+                std::move(decision.lease));
+
+                auto active = controller.snapshot();
+
+                expect(
+                active.active_requests == 1 &&
+                        active.reserved_input_tokens == 2 &&
+                        active.reserved_output_tokens == 3,
+                "Mailbox must own Admission resources",
+                failures);
+
+                /*
+                * 模拟 Backend submit 失败：
+                * Mailbox 没有被交给 Backend，也没有产生 Terminal。
+                */
+        }
+
+        auto released = controller.snapshot();
+
+        expect(
+                released.active_requests == 0 &&
+                released.reserved_input_tokens == 0 &&
+                released.reserved_output_tokens == 0,
+                "Mailbox destruction must release Admission resources",
+                failures);
+}
+
 int run() {
 int failures{0};
 
 testCapacity(failures);
 testTerminalReservationAndOrdering(failures);
+testTerminalReleasesAdmissionLease(failures);
+testMailboxDestructionReleasesAdmissionLease(failures);
 testTimeout(failures);
 testCloseWakesWaiter(failures);
 

@@ -221,7 +221,7 @@ if(BUILD_TESTING)
     target_compile_definitions(
         llm_admission_controller_test
         PRIVATE
-            _GLOBAL_USE_CXX11_ABI=0
+            _GLIBCXX_USE_CXX11_ABI=0
     )
 
     target_compile_options(
@@ -229,6 +229,7 @@ if(BUILD_TESTING)
           PRIVATE
               -Wall
               -Wextra
+              -Wpedantic
     )
 
     target_link_libraries(
@@ -253,6 +254,7 @@ if(BUILD_TESTING)
         llm_generation_mailbox_test
         "${KIMRT_ROOT}/tests/llm_generation_mailbox_test.cpp"
         "${KIMRT_ROOT}/src/models/llm/generation_mailbox.cpp"
+        "${KIMRT_ROOT}/src/models/llm/admission_controller.cpp"
     )
 
     target_include_directories(
@@ -299,6 +301,7 @@ if(BUILD_TESTING)
         "${KIMRT_ROOT}/tests/llm_request_state_test.cpp"
         "${KIMRT_ROOT}/src/models/llm/request_state.cpp"
         "${KIMRT_ROOT}/src/models/llm/generation_mailbox.cpp"
+        "${KIMRT_ROOT}/src/models/llm/admission_controller.cpp"
     )
     target_include_directories(
         llm_request_state_test

@@ -13,6 +13,18 @@ namespace kimrt::llm {
             }
     }
 
+    GenerationMailbox::GenerationMailbox(
+        GenerationMailboxConfig config,
+        AdmissionLease admissionLease
+    ):config_(std::move(config)),admissionLease_(std::move(admissionLease)){
+        if(config_.max_queued_deltas ==0 ||
+        config_.max_queued_tokens == 0){
+            throw std::invalid_argument(
+                "GenerationMailbox capacity must be greater than zero"
+            );
+        }
+    }
+
     bool GenerationMailbox::tryPushDelta(TokenDelta delta)noexcept{
         if(delta.token_ids.empty()){
             return false;
@@ -59,6 +71,17 @@ namespace kimrt::llm {
             terminal_.emplace(std::move(terminal));
             terminalCommitted_ = true;
         }
+
+
+        /*
+        * Terminal 已经成功进入预留槽，请求生命周期到此收敛。
+        *
+        * 必须在释放 Mailbox 锁后归还 Admission，避免 Mailbox 锁与
+        * AdmissionState 锁形成不必要的锁嵌套。
+        *
+        * AdmissionLease::release() 是幂等且 noexcept 的。
+        */
+        admissionLease_.release();
 
         gmcv_.notify_all();
         return true;

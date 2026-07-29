@@ -1,5 +1,6 @@
 #pragma once 
 
+#include "models/llm/admission_controller.h"
 #include "models/llm/generation_types.h"
 
 #include <chrono>
@@ -25,6 +26,11 @@ class GenerationMailbox final {
 public:
     explicit GenerationMailbox(GenerationMailboxConfig config);
 
+    GenerationMailbox(
+        GenerationMailboxConfig config,
+        AdmissionLease admissionLease
+    );
+
     GenerationMailbox(const GenerationMailbox&) = delete;
     GenerationMailbox& operator = (const GenerationMailbox&)=delete;
 
@@ -39,6 +45,8 @@ public:
     void close()noexcept;
 private:
     GenerationMailboxConfig config_;
+    AdmissionLease admissionLease_;
+
     std::mutex gmmtx_;
     std::condition_variable gmcv_;
     std::deque<TokenDelta> deltas_;
