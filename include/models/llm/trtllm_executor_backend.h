@@ -19,6 +19,10 @@ namespace kimrt::llm {
         // TensorRT-LLM 默认 kDefaultIterStatsMaxIterations = 1000
         // (executor.h:1273)，写满后静默淘汰最旧条目、不报错也不计数。
         // 这里显式放大只是安全网；真正的保证来自调用方在测量期间周期 drain。
+
+        //关于 iteration :
+        //在 LLM 推理中，一次迭代通常指生成一个 Token 的过程。
+        //TensorRT-LLM 的执行器（Executor）会循环执行这些迭代，直到完成所有请求
         std::int32_t iter_stats_max_iterations{100000};
     };
 

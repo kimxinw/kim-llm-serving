@@ -109,6 +109,7 @@ add_library(
     "${KIMRT_ROOT}/src/models/llm/generation_mailbox.cpp"
     "${KIMRT_ROOT}/src/models/llm/request_state.cpp"
     "${KIMRT_ROOT}/src/models/llm/trtllm_executor_backend.cpp"
+    "${KIMRT_ROOT}/src/models/llm/generation_runtime.cpp"
 )
 
 target_include_directories(
@@ -205,6 +206,52 @@ target_link_libraries(
 )
 
 if(BUILD_TESTING)
+    # GenerationRuntime CPU contract test
+    add_executable(
+        llm_generation_runtime_test
+        "${KIMRT_ROOT}/tests/llm_generation_runtime_test.cpp"
+        "${KIMRT_ROOT}/src/models/llm/generation_runtime.cpp"
+        "${KIMRT_ROOT}/src/models/llm/generation_mailbox.cpp"
+        "${KIMRT_ROOT}/src/models/llm/admission_controller.cpp"
+    )
+
+    target_include_directories(
+        llm_generation_runtime_test
+        PRIVATE
+            "${KIMRT_ROOT}/include"
+    )
+
+    target_compile_definitions(
+        llm_generation_runtime_test
+        PRIVATE
+            _GLIBCXX_USE_CXX11_ABI=0
+    )
+
+    target_compile_options(
+        llm_generation_runtime_test
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    target_link_libraries(
+        llm_generation_runtime_test
+        PRIVATE
+            Threads::Threads
+    )
+
+    add_test(
+        NAME llm_generation_runtime_contract
+        COMMAND llm_generation_runtime_test
+    )
+
+    set_tests_properties(
+        llm_generation_runtime_contract
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # admission_controller-test
     add_executable(
         llm_admission_controller_test
