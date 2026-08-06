@@ -4,6 +4,27 @@ project(kim_llm_serving LANGUAGES CXX)
 
 include(CTest)
 
+include(FetchContent)
+
+set(
+    FETCHCONTENT_UPDATES_DISCONNECTED
+    ON
+)
+
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY
+        https://github.com/nlohmann/json.git
+    GIT_TAG
+        v3.11.3
+    GIT_SHALLOW
+        TRUE
+)
+
+FetchContent_MakeAvailable(
+    nlohmann_json
+)
+
 set(KIMRT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
 set(CMAKE_CXX_STANDARD 17)
@@ -100,6 +121,45 @@ get_filename_component(
     TRT_LIBRARY_DIR
     "${TRT_NVINFER_LIBRARY}"
     DIRECTORY
+)
+
+# Worker-side IPC wire protocol.
+#
+# This target deliberately does not link TensorRT-LLM,
+# TensorRT, CUDA, MPI, or the GenerationBackend.
+add_library(
+    kimrt_llm_ipc_protocol
+    STATIC
+    "${KIMRT_ROOT}/src/models/llm/ipc_protocol.cpp"
+)
+
+target_include_directories(
+    kimrt_llm_ipc_protocol
+    PUBLIC
+        "${KIMRT_ROOT}/include"
+)
+
+# The immediate C++ consumer is the legacy ABI-0 llm_worker.
+# The Python Gateway implements the same wire protocol without
+# linking this C++ target.
+target_compile_definitions(
+    kimrt_llm_ipc_protocol
+    PUBLIC
+        _GLIBCXX_USE_CXX11_ABI=0
+)
+
+target_compile_options(
+    kimrt_llm_ipc_protocol
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+target_link_libraries(
+    kimrt_llm_ipc_protocol
+    PRIVATE
+        nlohmann_json::nlohmann_json
 )
 
 add_library(
@@ -206,6 +266,37 @@ target_link_libraries(
 )
 
 if(BUILD_TESTING)
+    # IPC frame and handshake protocol CPU contract test
+    add_executable(
+        llm_ipc_protocol_test
+        "${KIMRT_ROOT}/tests/llm_ipc_protocol_test.cpp"
+    )
+
+    target_compile_options(
+        llm_ipc_protocol_test
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    target_link_libraries(
+        llm_ipc_protocol_test
+        PRIVATE
+            kimrt_llm_ipc_protocol
+    )
+
+    add_test(
+        NAME llm_ipc_protocol_contract
+        COMMAND llm_ipc_protocol_test
+    )
+
+    set_tests_properties(
+        llm_ipc_protocol_contract
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # GenerationRuntime CPU contract test
     add_executable(
         llm_generation_runtime_test
