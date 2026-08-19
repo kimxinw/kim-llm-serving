@@ -5,31 +5,18 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
-#include <utility>
 
 namespace {
 
-using kimrt::StatusCode;
-using kimrt::llm::ipc::FrameCodecConfig;
-using kimrt::llm::ipc::FrameDecodeState;
-using kimrt::llm::ipc::FrameDecoder;
-using kimrt::llm::ipc::Hello;
-using kimrt::llm::ipc::HelloAck;
-using kimrt::llm::ipc::decodeHandshakePayload;
-using kimrt::llm::ipc::encodeFrame;
-using kimrt::llm::ipc::encodeHelloAckPayload;
-using kimrt::llm::ipc::encodeHelloPayload;
+using namespace kimrt::llm::ipc;
 
-bool expect(
-    bool condition,
-    std::string_view message,
-    int& failures) {
+bool expect(bool condition, std::string_view message, int& failures) {
     if (condition) {
         return true;
     }
-
     ++failures;
     std::cerr << "[FAIL] " << message << '\n';
     return false;
@@ -40,423 +27,357 @@ std::string_view bytesView(
     std::size_t offset,
     std::size_t count) {
     return {
-        reinterpret_cast<char const*>(
-            bytes.data() + offset),
+        reinterpret_cast<char const*>(bytes.data() + offset),
         count,
     };
 }
 
-std::vector<std::uint8_t> makeFrame(
-    std::string_view payload,
-    int& failures) {
-    auto encoded = encodeFrame(payload);
-
-    expect(
-        encoded.ok(),
-        "frame encoding must succeed",
-        failures);
-
-    return std::move(encoded.bytes);
+ModelManifest makeManifest() {
+    return {
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        "main@abc123",
+        "sha256:tokenizer",
+        "sha256:chat-template",
+        "sha256:engine",
+        2,
+        0,
+        2016,
+        128,
+        2048,
+        "fp16",
+        8,
+    };
 }
 
-void testNetworkByteOrder(int& failures) {
-    // 258 == 0x00000102
-    std::string const payload(258, 'x');
+WorkerLimits makeLimits() {
+    return {
+        8,
+        4096,
+        256,
+        kDefaultMaxFramePayloadBytes,
+        1024,
+        4U * 1024U * 1024U,
+        128,
+        1024U * 1024U,
+    };
+}
 
-    auto encoded = encodeFrame(payload);
+Submit makeSubmit() {
+    Submit message;
+    message.worker_epoch = 42;
+    message.request_id = 7;
+    message.priority = 3;
+    message.timeout_ms = 1500;
+    message.trace_id = "trace-7";
+    message.input_token_ids = {1, 2, 3};
+    message.max_new_tokens = 32;
+    message.streaming = true;
+    message.sampling = {0.8, 40, 0.95, 1234};
+    message.end_id = 2;
+    message.pad_id = 0;
+    message.stop_sequences = {{10, 11}, {12}};
+    return message;
+}
 
-    if (!expect(
-            encoded.ok(),
-            "network-order frame encoding must succeed",
-            failures)) {
-        return;
+Stats makeStats() {
+    Stats message;
+    message.worker_epoch = 42;
+    message.probe_id = 99;
+    message.ready = true;
+    message.status = kimrt::Status::success();
+    message.uptime_ms = 5000;
+    message.active_requests = 2;
+    message.reserved_input_tokens = 128;
+    message.reserved_output_tokens = 64;
+    message.session_egress_frames = 3;
+    message.session_egress_bytes = 1024;
+    message.session_egress_high_watermark_frames = 7;
+    message.session_egress_high_watermark_bytes = 4096;
+    message.rejected_requests = 4;
+    message.backpressure_requests = 1;
+    message.cancelled_requests = 2;
+    return message;
+}
+
+bool roundTrip(Message const& message, int& failures) {
+    auto encoded = encodePayload(message);
+    if (!expect(encoded.ok(), "message must encode", failures)) {
+        return false;
     }
-
-    if (!expect(
-            encoded.bytes.size() == 4U + payload.size(),
-            "encoded frame size must include four-byte prefix",
-            failures)) {
-        return;
+    auto decoded = decodePayload(encoded.payload);
+    if (!decoded.ok()) {
+        std::cerr << "decode failed for " << messageTypeName(message)
+                  << ": " << decoded.status.message << '\n'
+                  << encoded.payload << '\n';
     }
-
-    expect(
-        encoded.bytes[0] == 0U,
-        "length prefix byte 0 must be network order",
-        failures);
-
-    expect(
-        encoded.bytes[1] == 0U,
-        "length prefix byte 1 must be network order",
-        failures);
-
-    expect(
-        encoded.bytes[2] == 1U,
-        "length prefix byte 2 must be network order",
-        failures);
-
-    expect(
-        encoded.bytes[3] == 2U,
-        "length prefix byte 3 must be network order",
+    if (!expect(decoded.ok(), "encoded message must decode", failures)) {
+        return false;
+    }
+    return expect(
+        messageTypeName(message) == messageTypeName(*decoded.message),
+        "message type must survive round trip",
         failures);
 }
 
-void testHelloRoundTrip(int& failures) {
-    auto hello_payload =
-        encodeHelloPayload(Hello{});
+void testAllMessageRoundTrips(int& failures) {
+    std::vector<Message> const messages{
+        Hello{1, "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "main@abc123"},
+        HelloAck{1, 42, makeManifest(), makeLimits()},
+        makeSubmit(),
+        Accepted{1, 42, 7},
+        Rejected{
+            1,
+            42,
+            8,
+            kimrt::Status::error(
+                kimrt::StatusCode::ResourceExhausted,
+                "active request limit")},
+        Cancel{1, 42, 7},
+        TokenDelta{1, 42, 7, 0, {100, 101}},
+        Terminal{
+            1,
+            42,
+            7,
+            kimrt::Status::success(),
+            FinishReason::Length,
+            Usage{3, 32}},
+        Health{1, 42, 99},
+        makeStats(),
+    };
 
-    expect(
-        hello_payload.ok(),
-        "Hello encoding must succeed",
-        failures);
-
-    auto frame = makeFrame(
-        hello_payload.payload,
-        failures);
-
-    FrameDecoder decoder;
-
-    auto decoded_frame = decoder.feed(
-        bytesView(frame, 0, frame.size()));
-
-    expect(
-        decoded_frame.state ==
-            FrameDecodeState::FramesReady,
-        "complete Hello frame must be ready",
-        failures);
-
-    expect(
-        decoded_frame.payloads.size() == 1,
-        "complete Hello frame must produce one payload",
-        failures);
-
-    if (decoded_frame.payloads.size() != 1) {
-        return;
-    }
-
-    auto decoded_message =
-        decodeHandshakePayload(
-            decoded_frame.payloads[0]);
-
-    expect(
-        decoded_message.ok(),
-        "Hello payload must decode",
-        failures);
-
-    if (!decoded_message.message.has_value()) {
-        return;
-    }
-
-    auto const* hello = std::get_if<Hello>(
-        &*decoded_message.message);
-
-    expect(
-        hello != nullptr,
-        "decoded message must be Hello",
-        failures);
-
-    if (hello != nullptr) {
-        expect(
-            hello->protocol_version == 1,
-            "Hello protocol version must be preserved",
-            failures);
+    for (auto const& message : messages) {
+        roundTrip(message, failures);
     }
 }
 
-void testSplitPrefixAndPayload(int& failures) {
-    auto ack_payload =
-        encodeHelloAckPayload(HelloAck{1, 42});
-
-    expect(
-        ack_payload.ok(),
-        "HelloAck encoding must succeed",
-        failures);
-
-    auto frame = makeFrame(
-        ack_payload.payload,
-        failures);
-
-    FrameDecoder prefix_decoder;
-
-    for (std::size_t index = 0; index < 3; ++index) {
-        auto result = prefix_decoder.feed(
-            bytesView(frame, index, 1));
-
+void testFieldPreservation(int& failures) {
+    auto submit_encoded = encodePayload(Message{makeSubmit()});
+    auto submit_decoded = decodePayload(submit_encoded.payload);
+    if (!submit_decoded.ok()) {
+        std::cerr << "Submit decode failed: "
+                  << submit_decoded.status.message << '\n'
+                  << submit_encoded.payload << '\n';
+        return;
+    }
+    auto const* submit = std::get_if<Submit>(&*submit_decoded.message);
+    expect(submit != nullptr, "Submit type must be preserved", failures);
+    if (submit != nullptr) {
+        expect(submit->request_id == 7, "Submit request id must survive", failures);
         expect(
-            result.state ==
-                FrameDecodeState::NeedMore,
-            "split length prefix must wait",
+            submit->timeout_ms == std::optional<std::uint64_t>{1500},
+            "Submit timeout must survive",
+            failures);
+        expect(
+            submit->input_token_ids == std::vector<std::int32_t>({1, 2, 3}),
+            "Submit input tokens must survive",
+            failures);
+        expect(
+            submit->stop_sequences.size() == 2,
+            "Submit stop sequences must survive",
+            failures);
+        expect(
+            submit->sampling.random_seed == 1234,
+            "Submit sampling must survive",
             failures);
     }
 
-    auto prefix_completion = prefix_decoder.feed(
-        bytesView(frame, 3, frame.size() - 3));
-
-    expect(
-        prefix_completion.state ==
-            FrameDecodeState::FramesReady,
-        "remaining bytes must complete frame",
-        failures);
-
-    FrameDecoder payload_decoder;
-
-    auto const split =
-        4U + ack_payload.payload.size() / 2U;
-
-    auto first_half = payload_decoder.feed(
-        bytesView(frame, 0, split));
-
-    expect(
-        first_half.state ==
-            FrameDecodeState::NeedMore,
-        "partial payload must wait",
-        failures);
-
-    expect(
-        payload_decoder.hasPartialFrame(),
-        "decoder must remember partial payload",
-        failures);
-
-    auto second_half = payload_decoder.feed(
-        bytesView(
-            frame,
-            split,
-            frame.size() - split));
-
-    expect(
-        second_half.state ==
-            FrameDecodeState::FramesReady,
-        "second half must complete frame",
-        failures);
-
-    if (second_half.payloads.size() != 1) {
-        expect(
-            false,
-            "split frame must produce one payload",
-            failures);
-        return;
-    }
-
-    auto decoded = decodeHandshakePayload(
-        second_half.payloads[0]);
-
-    expect(
-        decoded.ok(),
-        "HelloAck payload must decode",
-        failures);
-
-    if (!decoded.message.has_value()) {
-        return;
-    }
-
-    auto const* ack = std::get_if<HelloAck>(
-        &*decoded.message);
-
-    expect(
-        ack != nullptr,
-        "decoded message must be HelloAck",
-        failures);
-
+    auto ack_encoded = encodePayload(
+        Message{HelloAck{1, 42, makeManifest(), makeLimits()}});
+    auto ack_decoded = decodePayload(ack_encoded.payload);
+    auto const* ack = std::get_if<HelloAck>(&*ack_decoded.message);
+    expect(ack != nullptr, "HelloAck type must be preserved", failures);
     if (ack != nullptr) {
         expect(
-            ack->worker_epoch == 42,
-            "worker epoch must be preserved",
+            ack->manifest.engine_fingerprint == "sha256:engine",
+            "Manifest fingerprint must survive",
+            failures);
+        expect(
+            ack->limits.max_active_requests == 8,
+            "Worker limits must survive",
+            failures);
+    }
+
+    auto terminal_encoded = encodePayload(Message{Terminal{
+        1,
+        42,
+        7,
+        kimrt::Status::error(kimrt::StatusCode::Timeout, "deadline"),
+        FinishReason::Timeout,
+        Usage{3, 4}}});
+    auto terminal_decoded = decodePayload(terminal_encoded.payload);
+    auto const* terminal = std::get_if<Terminal>(&*terminal_decoded.message);
+    expect(terminal != nullptr, "Terminal type must be preserved", failures);
+    if (terminal != nullptr) {
+        expect(
+            terminal->status.code == kimrt::StatusCode::Timeout,
+            "Terminal status string mapping must survive",
+            failures);
+        expect(
+            terminal->finish_reason == FinishReason::Timeout,
+            "Terminal finish reason string mapping must survive",
             failures);
     }
 }
 
-void testMultipleFramesInOneRead(int& failures) {
-    auto hello_payload =
-        encodeHelloPayload(Hello{});
-
-    auto ack_payload =
-        encodeHelloAckPayload(HelloAck{1, 99});
-
+void testStableNames(int& failures) {
     expect(
-        hello_payload.ok(),
-        "Hello encoding must succeed",
+        statusCodeName(kimrt::StatusCode::ResourceExhausted) ==
+            "resource_exhausted",
+        "StatusCode must use stable snake-case string",
         failures);
-
     expect(
-        ack_payload.ok(),
-        "HelloAck encoding must succeed",
+        parseStatusCode("resource_exhausted") ==
+            kimrt::StatusCode::ResourceExhausted,
+        "StatusCode string must parse",
         failures);
-
-    auto hello_frame = makeFrame(
-        hello_payload.payload,
-        failures);
-
-    auto ack_frame = makeFrame(
-        ack_payload.payload,
-        failures);
-
-    hello_frame.insert(
-        hello_frame.end(),
-        ack_frame.begin(),
-        ack_frame.end());
-
-    FrameDecoder decoder;
-
-    auto result = decoder.feed(
-        bytesView(
-            hello_frame,
-            0,
-            hello_frame.size()));
-
     expect(
-        result.state ==
-            FrameDecodeState::FramesReady,
-        "coalesced frames must decode",
+        finishReasonName(FinishReason::Backpressure) == "backpressure",
+        "FinishReason must use stable string",
         failures);
-
     expect(
-        result.payloads.size() == 2,
-        "coalesced input must produce two payloads",
+        !parseFinishReason("7").has_value(),
+        "numeric FinishReason representation must fail",
         failures);
 }
 
-void testInvalidFrameLengths(int& failures) {
-    FrameDecoder zero_length_decoder;
+void testStrictPayloadValidation(int& failures) {
+    std::vector<std::string> const invalid_payloads{
+        "{not-json}",
+        R"([])",
+        R"({"type":"unknown"})",
+        R"({"type":"hello","protocol_version":1,"model_id":"m","revision":"r","extra":true})",
+        R"({"type":"hello","protocol_version":2,"model_id":"m","revision":"r"})",
+        R"({"type":"accepted","protocol_version":1,"worker_epoch":0,"request_id":1})",
+        R"({"type":"accepted","protocol_version":1,"worker_epoch":1,"request_id":0})",
+        R"({"type":"rejected","protocol_version":1,"worker_epoch":1,"request_id":1,"status":{"code":"ok","message":""}})",
+        R"({"type":"rejected","protocol_version":1,"worker_epoch":1,"request_id":1,"status":{"code":"new_code","message":"x"}})",
+        R"({"type":"token_delta","protocol_version":1,"worker_epoch":1,"request_id":1,"sequence_no":0,"token_ids":[]})",
+        R"({"type":"terminal","protocol_version":1,"worker_epoch":1,"request_id":1,"status":{"code":"ok","message":""},"finish_reason":null,"usage":{"prompt_tokens":1,"completion_tokens":2}})",
+        R"({"type":"terminal","protocol_version":1,"worker_epoch":1,"request_id":1,"status":{"code":"timeout","message":"x"},"finish_reason":"future_reason","usage":{"prompt_tokens":1,"completion_tokens":2}})",
+        R"({"type":"health","protocol_version":1,"worker_epoch":1,"probe_id":0})",
+    };
+
+    for (auto const& payload : invalid_payloads) {
+        expect(
+            !decodePayload(payload).ok(),
+            "strict decoder must reject invalid payload",
+            failures);
+    }
+}
+
+void testEncoderValidation(int& failures) {
+    auto submit = makeSubmit();
+    submit.timeout_ms = 0;
+    expect(
+        !encodePayload(Message{submit}).ok(),
+        "zero timeout must not encode",
+        failures);
+
+    submit = makeSubmit();
+    submit.input_token_ids.clear();
+    expect(
+        !encodePayload(Message{submit}).ok(),
+        "empty input token list must not encode",
+        failures);
+
+    submit = makeSubmit();
+    submit.sampling.top_p = 1.5;
+    expect(
+        !encodePayload(Message{submit}).ok(),
+        "invalid top_p must not encode",
+        failures);
+
+    auto manifest = makeManifest();
+    manifest.engine_fingerprint.clear();
+    expect(
+        !encodePayload(
+             Message{HelloAck{1, 42, manifest, makeLimits()}})
+             .ok(),
+        "incomplete manifest must not encode",
+        failures);
+
+    auto stats = makeStats();
+    stats.ready = false;
+    expect(
+        !encodePayload(Message{stats}).ok(),
+        "inconsistent readiness must not encode",
+        failures);
+}
+
+void testFrameCodec(int& failures) {
+    std::string const payload(258, 'x');
+    auto encoded = encodeFrame(payload);
+    if (!expect(encoded.ok(), "frame encoding must succeed", failures)) {
+        return;
+    }
+    expect(
+        encoded.bytes.size() == 262,
+        "frame must include four-byte prefix",
+        failures);
+    expect(
+        encoded.bytes[0] == 0 && encoded.bytes[1] == 0 &&
+            encoded.bytes[2] == 1 && encoded.bytes[3] == 2,
+        "frame length must use network byte order",
+        failures);
+
+    FrameDecoder split_decoder;
+    auto first = split_decoder.feed(bytesView(encoded.bytes, 0, 3));
+    expect(
+        first.state == FrameDecodeState::NeedMore,
+        "split prefix must wait",
+        failures);
+    auto second = split_decoder.feed(
+        bytesView(encoded.bytes, 3, encoded.bytes.size() - 3));
+    expect(
+        second.state == FrameDecodeState::FramesReady &&
+            second.payloads.size() == 1 && second.payloads[0] == payload,
+        "split frame must reassemble",
+        failures);
+
+    auto hello = encodePayload(
+        Message{Hello{1, "model", "revision"}});
+    auto health = encodePayload(Message{Health{1, 42, 9}});
+    auto first_frame = encodeFrame(hello.payload).bytes;
+    auto second_frame = encodeFrame(health.payload).bytes;
+    first_frame.insert(
+        first_frame.end(),
+        second_frame.begin(),
+        second_frame.end());
+    FrameDecoder coalesced_decoder;
+    auto coalesced = coalesced_decoder.feed(bytesView(
+        first_frame,
+        0,
+        first_frame.size()));
+    expect(
+        coalesced.state == FrameDecodeState::FramesReady &&
+            coalesced.payloads.size() == 2,
+        "coalesced frames must decode independently",
+        failures);
 
     std::string const zero_length(4, '\0');
-
-    auto zero_result =
-        zero_length_decoder.feed(zero_length);
-
+    FrameDecoder zero_decoder;
     expect(
-        zero_result.state ==
-            FrameDecodeState::Error,
+        zero_decoder.feed(zero_length).state == FrameDecodeState::Error,
         "zero-length frame must fail",
         failures);
 
-    expect(
-        zero_result.status.code ==
-            StatusCode::InvalidInput,
-        "zero-length frame must be InvalidInput",
-        failures);
-
-    FrameDecoder oversized_decoder(
-        FrameCodecConfig{16});
-
+    FrameDecoder oversized_decoder(FrameCodecConfig{16});
     std::string const oversized_prefix{
         static_cast<char>(0),
         static_cast<char>(0),
         static_cast<char>(0),
         static_cast<char>(17),
     };
-
-    auto oversized_result =
-        oversized_decoder.feed(
-            oversized_prefix);
-
+    auto oversized = oversized_decoder.feed(oversized_prefix);
     expect(
-        oversized_result.state ==
-            FrameDecodeState::Error,
-        "oversized frame must fail",
+        oversized.state == FrameDecodeState::Error &&
+            oversized.status.code == kimrt::StatusCode::ResourceExhausted,
+        "oversized frame must fail with ResourceExhausted",
         failures);
-
-    expect(
-        oversized_result.status.code ==
-            StatusCode::ResourceExhausted,
-        "oversized frame must be ResourceExhausted",
-        failures);
-
-    auto failed_again =
-        oversized_decoder.feed("anything");
-
     oversized_decoder.reset();
-
     expect(
         !oversized_decoder.failed(),
-        "reset must clear decoder failure state",
-        failures);
-
-    auto recovered_frame = makeFrame(
-        "ok",
-        failures);
-
-    auto recovered = oversized_decoder.feed(
-        bytesView(
-            recovered_frame,
-            0,
-            recovered_frame.size()));
-
-    expect(
-        recovered.state ==
-            FrameDecodeState::FramesReady,
-        "decoder must accept frames after reset",
-        failures);
-
-    expect(
-        recovered.payloads.size() == 1 &&
-            recovered.payloads[0] == "ok",
-        "decoder must preserve payload after reset",
-        failures);
-
-    expect(
-        failed_again.state ==
-            FrameDecodeState::Error,
-        "decoder must remain failed until reset",
-        failures);
-}
-
-void testInvalidHandshakePayloads(int& failures) {
-    auto malformed =
-        decodeHandshakePayload("{not-json}");
-
-    expect(
-        !malformed.ok(),
-        "malformed JSON must fail",
-        failures);
-
-    auto unsupported = decodeHandshakePayload(
-        R"({"type":"hello","protocol_version":2})");
-
-    expect(
-        !unsupported.ok(),
-        "unsupported version must fail",
-        failures);
-
-    auto unknown_field = decodeHandshakePayload(
-        R"({"type":"hello","protocol_version":1,"extra":true})");
-
-    expect(
-        !unknown_field.ok(),
-        "unexpected v1 field must fail",
-        failures);
-
-    auto zero_epoch = decodeHandshakePayload(
-        R"({"type":"hello_ack","protocol_version":1,"worker_epoch":0})");
-
-    expect(
-        !zero_epoch.ok(),
-        "zero worker epoch must fail",
-        failures);
-}
-
-void testEncoderValidation(int& failures) {
-    auto empty = encodeFrame("");
-
-    expect(
-        !empty.ok(),
-        "empty frame payload must be rejected",
-        failures);
-
-    auto too_large = encodeFrame(
-        "12345",
-        FrameCodecConfig{4});
-
-    expect(
-        !too_large.ok(),
-        "oversized payload must be rejected",
-        failures);
-
-    auto invalid_ack =
-        encodeHelloAckPayload(
-            HelloAck{1, 0});
-
-    expect(
-        !invalid_ack.ok(),
-        "zero worker epoch must not encode",
+        "reset must clear frame decoder failure",
         failures);
 }
 
@@ -464,24 +385,17 @@ void testEncoderValidation(int& failures) {
 
 int main() {
     int failures = 0;
-
-    testNetworkByteOrder(failures);
-    testHelloRoundTrip(failures);
-    testSplitPrefixAndPayload(failures);
-    testMultipleFramesInOneRead(failures);
-    testInvalidFrameLengths(failures);
-    testInvalidHandshakePayloads(failures);
+    testAllMessageRoundTrips(failures);
+    testFieldPreservation(failures);
+    testStableNames(failures);
+    testStrictPayloadValidation(failures);
     testEncoderValidation(failures);
+    testFrameCodec(failures);
 
     if (failures == 0) {
-        std::cout
-            << "[PASS] LLM IPC protocol contract\n";
+        std::cout << "[PASS] LLM IPC v1 protocol contract\n";
         return 0;
     }
-
-    std::cerr
-        << failures
-        << " IPC protocol assertion(s) failed\n";
-
+    std::cerr << failures << " IPC protocol assertion(s) failed\n";
     return 1;
 }

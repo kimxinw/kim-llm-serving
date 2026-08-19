@@ -4,7 +4,7 @@
 #include <string>
 
 namespace kimrt {
-    struct   RequestContext{
+    struct RequestContext{
         std::uint64_t request_id{0};
         int priority{0};
         std::chrono::steady_clock::time_point deadline {
