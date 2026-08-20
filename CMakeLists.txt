@@ -162,6 +162,44 @@ target_link_libraries(
         nlohmann_json::nlohmann_json
 )
 
+# Unix Domain Socket transport and session lifecycle.
+#
+# This target stays independent from the GPU runtime so its contracts can run
+# with real local sockets and no Engine.
+add_library(
+    kimrt_llm_ipc_transport
+    STATIC
+    "${KIMRT_ROOT}/src/models/llm/ipc_transport.cpp"
+)
+
+target_include_directories(
+    kimrt_llm_ipc_transport
+    PUBLIC
+        "${KIMRT_ROOT}/include"
+)
+
+target_compile_definitions(
+    kimrt_llm_ipc_transport
+    PUBLIC
+        _GLIBCXX_USE_CXX11_ABI=0
+)
+
+target_compile_options(
+    kimrt_llm_ipc_transport
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+target_link_libraries(
+    kimrt_llm_ipc_transport
+    PUBLIC
+        kimrt_llm_ipc_protocol
+    PRIVATE
+        Threads::Threads
+)
+
 add_library(
     kimrt_llm
     STATIC
@@ -295,6 +333,37 @@ if(BUILD_TESTING)
         llm_ipc_protocol_contract
         PROPERTIES
             TIMEOUT 10
+    )
+
+    # Real UDS transport, handshake, disconnect, and resource contract test
+    add_executable(
+        llm_ipc_transport_test
+        "${KIMRT_ROOT}/tests/llm_ipc_transport_test.cpp"
+    )
+
+    target_compile_options(
+        llm_ipc_transport_test
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    target_link_libraries(
+        llm_ipc_transport_test
+        PRIVATE
+            kimrt_llm_ipc_transport
+    )
+
+    add_test(
+        NAME llm_ipc_transport_contract
+        COMMAND llm_ipc_transport_test
+    )
+
+    set_tests_properties(
+        llm_ipc_transport_contract
+        PROPERTIES
+            TIMEOUT 15
     )
 
     # GenerationRuntime CPU contract test
