@@ -208,6 +208,8 @@ add_library(
     "${KIMRT_ROOT}/src/models/llm/request_state.cpp"
     "${KIMRT_ROOT}/src/models/llm/trtllm_executor_backend.cpp"
     "${KIMRT_ROOT}/src/models/llm/generation_runtime.cpp"
+    "${KIMRT_ROOT}/src/models/llm/session_egress.cpp"
+    "${KIMRT_ROOT}/src/models/llm/runtime_bridge.cpp"
 )
 
 target_include_directories(
@@ -241,6 +243,8 @@ target_compile_options(
 
 target_link_libraries(
     kimrt_llm
+    PUBLIC
+        kimrt_llm_ipc_transport
     PRIVATE
         "${TRTLLM_PLUGIN_LIBRARY}"
         "${TRTLLM_LIBRARY}"
@@ -410,6 +414,55 @@ if(BUILD_TESTING)
         llm_generation_runtime_contract
         PROPERTIES
             TIMEOUT 10
+    )
+
+    # Runtime Bridge, request ownership, fair egress, and disconnect contract
+    add_executable(
+        llm_runtime_bridge_test
+        "${KIMRT_ROOT}/tests/llm_runtime_bridge_test.cpp"
+        "${KIMRT_ROOT}/src/models/llm/runtime_bridge.cpp"
+        "${KIMRT_ROOT}/src/models/llm/session_egress.cpp"
+        "${KIMRT_ROOT}/src/models/llm/generation_runtime.cpp"
+        "${KIMRT_ROOT}/src/models/llm/generation_mailbox.cpp"
+        "${KIMRT_ROOT}/src/models/llm/admission_controller.cpp"
+    )
+
+    target_include_directories(
+        llm_runtime_bridge_test
+        PRIVATE
+            "${KIMRT_ROOT}/include"
+    )
+
+    target_compile_definitions(
+        llm_runtime_bridge_test
+        PRIVATE
+            _GLIBCXX_USE_CXX11_ABI=0
+    )
+
+    target_compile_options(
+        llm_runtime_bridge_test
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    target_link_libraries(
+        llm_runtime_bridge_test
+        PRIVATE
+            kimrt_llm_ipc_transport
+            Threads::Threads
+    )
+
+    add_test(
+        NAME llm_runtime_bridge_contract
+        COMMAND llm_runtime_bridge_test
+    )
+
+    set_tests_properties(
+        llm_runtime_bridge_contract
+        PROPERTIES
+            TIMEOUT 20
     )
 
     # admission_controller-test
