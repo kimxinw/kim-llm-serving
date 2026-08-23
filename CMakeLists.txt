@@ -459,7 +459,34 @@ if(BUILD_TESTING)
                 PROPERTIES
                     TIMEOUT 300
                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0"
+                    LABELS "gpu;integration"
+                    RESOURCE_LOCK kim_llm_gpu_0
             )
+
+            if(Python3_Interpreter_FOUND)
+                add_test(
+                    NAME llm_python_real_worker_engine_e2e
+                    COMMAND
+                        "${Python3_EXECUTABLE}"
+                        "${KIM_LLM_ROOT}/tests/integration/test_real_worker_engine.py"
+                        --worker "$<TARGET_FILE:llm_worker>"
+                        --engine-dir "${KIMRT_LLM_TEST_ENGINE_DIR}"
+                )
+                set_tests_properties(
+                    llm_python_real_worker_engine_e2e
+                    PROPERTIES
+                        TIMEOUT 360
+                        ENVIRONMENT
+                            "CUDA_VISIBLE_DEVICES=0;PYTHONPATH=${KIM_LLM_ROOT}/clients/python;PYTHONDONTWRITEBYTECODE=1"
+                        LABELS "gpu;integration"
+                        RESOURCE_LOCK kim_llm_gpu_0
+                )
+            else()
+                message(
+                    STATUS
+                    "Python3 interpreter was not found; real Worker/Engine IPC test is not registered"
+                )
+            endif()
         else()
             message(
                 STATUS
