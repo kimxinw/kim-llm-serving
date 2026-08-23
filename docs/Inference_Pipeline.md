@@ -14,6 +14,11 @@
   需要先说明：目前 A6-3 还没有真正的 Python Gateway 和独立 llm_worker。所以当前“请求入口”是已经连接好的
   Client IpcSession；A6-4 才会把它装进两个独立进程。
 
+  模块化重构后，本文中的文件名按以下职责目录解析：公共类型位于 `include/common/`，生成生命周期位于
+  `include/runtime/` 与 `src/runtime/`，协议和 UDS Session 位于 `include/ipc/` 与 `src/ipc/`，
+  Runtime Bridge/Egress 位于 `include/worker/` 与 `src/worker/`，TensorRT-LLM 实现位于
+  `include/backends/trtllm/` 与 `src/backends/trtllm/`。测试在 `tests/` 下使用相同分类。
+
   ———
 
   ## 一、请求涉及的模块
