@@ -140,13 +140,14 @@ target_link_libraries(
         Threads::Threads
 )
 
-# Worker-side orchestration between the CPU runtime and IPC session. The
-# future llm_worker executable will compose this target with one backend.
+# Worker-side Session supervision and orchestration between the CPU runtime
+# and IPC. The llm_worker executable composes this target with one backend.
 add_library(
     kim_llm_worker_core
     STATIC
         "${KIM_LLM_ROOT}/src/worker/runtime_bridge.cpp"
         "${KIM_LLM_ROOT}/src/worker/session_egress.cpp"
+        "${KIM_LLM_ROOT}/src/worker/worker_server.cpp"
 )
 add_library(kim_llm::worker_core ALIAS kim_llm_worker_core)
 
@@ -290,6 +291,20 @@ if(KIM_LLM_ENABLE_TRTLLM)
     )
 
     add_executable(
+        llm_worker
+        "${KIM_LLM_ROOT}/apps/llm_worker.cpp"
+    )
+    kim_llm_enable_warnings(llm_worker)
+    target_link_options(llm_worker PRIVATE -Wl,--allow-shlib-undefined)
+    target_link_libraries(
+        llm_worker
+        PRIVATE
+            kim_llm::worker_core
+            kim_llm::trtllm_backend
+            nlohmann_json::nlohmann_json
+    )
+
+    add_executable(
         llm_infer
         "${KIM_LLM_ROOT}/apps/llm_infer.cpp"
     )
@@ -348,6 +363,14 @@ if(BUILD_TESTING)
     )
 
     kim_llm_add_contract_test(
+        llm_worker_server_test
+        llm_worker_server_contract
+        tests/worker/llm_worker_server_test.cpp
+        20
+        kim_llm::worker_core
+    )
+
+    kim_llm_add_contract_test(
         llm_admission_controller_test
         llm_admission_controller_contract
         tests/runtime/llm_admission_controller_test.cpp
@@ -378,6 +401,27 @@ if(BUILD_TESTING)
         10
         kim_llm::runtime
     )
+
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME llm_python_generation_client_contract
+            COMMAND
+                "${Python3_EXECUTABLE}"
+                "${KIM_LLM_ROOT}/tests/clients/python/test_generation_client.py"
+        )
+        set_tests_properties(
+            llm_python_generation_client_contract
+            PROPERTIES
+                TIMEOUT 20
+                ENVIRONMENT "PYTHONPATH=${KIM_LLM_ROOT}/clients/python"
+        )
+    else()
+        message(
+            STATUS
+            "Python3 interpreter was not found; Python client contract test is not registered"
+        )
+    endif()
 
     if(KIM_LLM_ENABLE_TRTLLM)
         set(
