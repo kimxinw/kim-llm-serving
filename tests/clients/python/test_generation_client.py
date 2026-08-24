@@ -11,6 +11,7 @@ import unittest
 from typing import Any, Optional
 
 from kim_llm_client import (
+    ClientCapacityError,
     GenerationClient,
     GenerationClientConfig,
     GenerationRequest,
@@ -384,6 +385,18 @@ class GenerationClientTest(unittest.TestCase):
         self.assertEqual(tokens, (30,))
         self.assertEqual(terminal.status.code, "cancelled")
         self.assertTrue(handle.overflowed)
+
+    def test_pending_request_capacity_has_a_typed_error(self) -> None:
+        worker = FakeWorker(self.manifest, self.limits)
+        client = self.make_client(worker)
+        first = client.submit(self.request(6), timeout=1.0)
+        second = client.submit(self.request(7), timeout=1.0)
+        with self.assertRaises(ClientCapacityError):
+            client.submit(self.request(8), timeout=1.0)
+        worker.send(self.terminal(6))
+        worker.send(self.terminal(7))
+        self.assertTrue(first.collect(timeout=1.0)[1].status.ok)
+        self.assertTrue(second.collect(timeout=1.0)[1].status.ok)
 
     def test_full_manifest_mismatch_rejects_handshake(self) -> None:
         mismatched = ModelManifest(

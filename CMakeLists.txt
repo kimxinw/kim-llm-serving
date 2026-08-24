@@ -428,6 +428,32 @@ if(BUILD_TESTING)
                 TIMEOUT 20
                 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
         )
+        add_test(
+            NAME llm_python_gateway_core_contract
+            COMMAND
+                "${Python3_EXECUTABLE}"
+                "${KIM_LLM_ROOT}/tests/gateway/python/test_gateway_core.py"
+        )
+        set_tests_properties(
+            llm_python_gateway_core_contract
+            PROPERTIES
+                TIMEOUT 20
+                ENVIRONMENT
+                    "PYTHONPATH=${KIM_LLM_ROOT}/clients/python:${KIM_LLM_ROOT}/gateway/python;PYTHONDONTWRITEBYTECODE=1"
+        )
+        add_test(
+            NAME llm_python_gateway_api_contract
+            COMMAND
+                "${Python3_EXECUTABLE}"
+                "${KIM_LLM_ROOT}/tests/gateway/python/test_gateway_api.py"
+        )
+        set_tests_properties(
+            llm_python_gateway_api_contract
+            PROPERTIES
+                TIMEOUT 20
+                ENVIRONMENT
+                    "PYTHONPATH=${KIM_LLM_ROOT}/clients/python:${KIM_LLM_ROOT}/gateway/python:${KIM_LLM_ROOT}/tests/gateway/python;PYTHONDONTWRITEBYTECODE=1"
+        )
     else()
         message(
             STATUS

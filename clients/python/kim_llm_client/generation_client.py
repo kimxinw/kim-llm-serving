@@ -41,6 +41,10 @@ class WorkerUnavailableError(GenerationClientError):
     pass
 
 
+class ClientCapacityError(GenerationClientError):
+    pass
+
+
 class RequestRejectedError(GenerationClientError):
     def __init__(self, request_id: int, status: Status) -> None:
         super().__init__(
@@ -304,7 +308,9 @@ class GenerationClient:
                 hello_ack.limits.max_active_requests,
             )
             if len(self._requests) >= request_limit:
-                raise GenerationClientError("GenerationClient request capacity is full")
+                raise ClientCapacityError(
+                    "GenerationClient request capacity is full"
+                )
             state = _RequestState(
                 request.request_id,
                 _EventBuffer(self._config.max_delta_events_per_request),
@@ -618,6 +624,7 @@ class GenerationClient:
 
 
 __all__ = [
+    "ClientCapacityError",
     "GenerationClient",
     "GenerationClientConfig",
     "GenerationClientError",

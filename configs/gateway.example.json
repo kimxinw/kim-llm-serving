@@ -1,0 +1,18 @@
+{
+  "worker_config_path": "/path/to/worker-config.json",
+  "tokenizer_path": "/path/to/TinyLlama-1.1B-Chat-v1.0",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "log_level": "info",
+  "accept_timeout_seconds": 10.0,
+  "request_timeout_seconds": 120.0,
+  "health_timeout_seconds": 1.0,
+  "event_poll_seconds": 0.1,
+  "cancel_drain_timeout_seconds": 30.0,
+  "shutdown_grace_seconds": 30.0,
+  "max_http_body_bytes": 1048576,
+  "max_pending_requests": 8,
+  "max_client_delta_events_per_request": 64,
+  "max_sse_delta_events_per_request": 32,
+  "sampling_top_k": 1
+}

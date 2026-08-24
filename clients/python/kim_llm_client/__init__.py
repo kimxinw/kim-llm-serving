@@ -1,4 +1,5 @@
 from .generation_client import (
+    ClientCapacityError,
     GenerationClient,
     GenerationClientConfig,
     GenerationClientError,
@@ -21,6 +22,7 @@ from .protocol import (
 )
 
 __all__ = [
+    "ClientCapacityError",
     "GenerationClient",
     "GenerationClientConfig",
     "GenerationClientError",

@@ -1,0 +1,3 @@
+fastapi>=0.110,<1
+transformers>=4.40,<5
+uvicorn>=0.29,<1
