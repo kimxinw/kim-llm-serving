@@ -416,6 +416,18 @@ if(BUILD_TESTING)
                 TIMEOUT 20
                 ENVIRONMENT "PYTHONPATH=${KIM_LLM_ROOT}/clients/python"
         )
+        add_test(
+            NAME llm_python_direct_ipc_benchmark_contract
+            COMMAND
+                "${Python3_EXECUTABLE}"
+                "${KIM_LLM_ROOT}/tests/benchmark/test_direct_ipc_benchmark.py"
+        )
+        set_tests_properties(
+            llm_python_direct_ipc_benchmark_contract
+            PROPERTIES
+                TIMEOUT 20
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        )
     else()
         message(
             STATUS

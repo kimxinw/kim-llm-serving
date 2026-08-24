@@ -21,6 +21,11 @@ Makefile
 *.log
 benchmark/results/
 
+# Python-generated artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Model and engine artifacts
 /models/
 *.bin

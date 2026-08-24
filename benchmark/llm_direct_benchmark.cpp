@@ -140,6 +140,7 @@ namespace {
 
     std::size_t promptTokens{0};
     std::size_t completionTokens{0};
+    std::vector<TokenId> outputTokenIds;
 
     double ttftMs{-1.0};
     double tpotMs{-1.0};
@@ -403,6 +404,10 @@ namespace {
 
         lastTokenTime = receiveTime;
         observedTokens += delta->token_ids.size();
+        result.outputTokenIds.insert(
+            result.outputTokenIds.end(),
+            delta->token_ids.begin(),
+            delta->token_ids.end());
         continue;
       }
 
@@ -566,6 +571,77 @@ namespace {
     return escaped;
   }
 
+  std::string jsonEscape(std::string const &value) {
+    std::ostringstream escaped;
+    escaped << '"';
+
+    for (unsigned char character : value) {
+      switch (character) {
+      case '"':
+        escaped << "\\\"";
+        break;
+      case '\\':
+        escaped << "\\\\";
+        break;
+      case '\b':
+        escaped << "\\b";
+        break;
+      case '\f':
+        escaped << "\\f";
+        break;
+      case '\n':
+        escaped << "\\n";
+        break;
+      case '\r':
+        escaped << "\\r";
+        break;
+      case '\t':
+        escaped << "\\t";
+        break;
+      default:
+        if (character < 0x20U) {
+          escaped << "\\u"
+                  << std::hex << std::setw(4) << std::setfill('0')
+                  << static_cast<unsigned int>(character)
+                  << std::dec << std::setfill(' ');
+        } else {
+          escaped << static_cast<char>(character);
+        }
+      }
+    }
+
+    escaped << '"';
+    return escaped.str();
+  }
+
+  std::string tokenIdsText(std::vector<TokenId> const &tokenIds) {
+    std::ostringstream output;
+
+    for (std::size_t index = 0; index < tokenIds.size(); ++index) {
+      if (index != 0) {
+        output << ' ';
+      }
+      output << tokenIds[index];
+    }
+
+    return output.str();
+  }
+
+  std::string tokenIdsJson(std::vector<TokenId> const &tokenIds) {
+    std::ostringstream output;
+    output << '[';
+
+    for (std::size_t index = 0; index < tokenIds.size(); ++index) {
+      if (index != 0) {
+        output << ',';
+      }
+      output << tokenIds[index];
+    }
+
+    output << ']';
+    return output.str();
+  }
+
   void writeRequestCsv(
       std::filesystem::path const &path,
       std::vector<RequestResult> const &requests) {
@@ -579,7 +655,7 @@ namespace {
 
     output
         << "request_id,success,prompt_tokens,completion_tokens,"
-        << "ttft_ms,tpot_ms,e2e_ms,error\n";
+        << "output_token_ids,ttft_ms,tpot_ms,e2e_ms,error\n";
 
     output << std::fixed << std::setprecision(3);
 
@@ -587,7 +663,8 @@ namespace {
       output << request.requestId << ','
              << (request.success ? 1 : 0) << ','
              << request.promptTokens << ','
-             << request.completionTokens << ',';
+             << request.completionTokens << ','
+             << csvEscape(tokenIdsText(request.outputTokenIds)) << ',';
 
       if (request.ttftMs >= 0.0) {
         output << request.ttftMs;
@@ -669,9 +746,10 @@ namespace {
 
     output << std::fixed << std::setprecision(6);
     output << "{\n";
-    output << "  \"schema_version\": 1,\n";
+    output << "  \"schema_version\": 2,\n";
+    output << "  \"benchmark_path\": \"direct\",\n";
     output << "  \"engine_dir\": "
-           << csvEscape(options.engineDir.string()) << ",\n";
+           << jsonEscape(options.engineDir.string()) << ",\n";
     output << "  \"concurrency\": " << options.concurrency << ",\n";
     output << "  \"warmup_requests\": " << options.warmupRequests << ",\n";
     output << "  \"measured_requests\": "
@@ -681,7 +759,12 @@ namespace {
     output << "  \"failed_requests\": "
            << options.measuredRequests - successfulRequests << ",\n";
     output << "  \"input_tokens\": " << options.inputTokens.size() << ",\n";
+    output << "  \"input_token_ids\": "
+           << tokenIdsJson(options.inputTokens) << ",\n";
     output << "  \"max_new_tokens\": " << options.maxNewTokens << ",\n";
+    output << "  \"streaming\": true,\n";
+    output << "  \"sampling\": {\"temperature\":1.0,"
+              "\"top_k\":1,\"top_p\":1.0,\"random_seed\":0},\n";
     output << "  \"load_ms\": " << loadMs << ",\n";
     output << "  \"duration_seconds\": "
            << run.durationSeconds << ",\n";
