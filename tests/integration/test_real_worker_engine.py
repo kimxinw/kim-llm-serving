@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -15,13 +16,18 @@ from typing import Optional
 from kim_llm_client import (
     GenerationClient,
     GenerationClientConfig,
+    GenerationHandle,
     GenerationRequest,
     ModelManifest,
+    Terminal,
+    WorkerUnavailableError,
     WorkerLimits,
 )
 
 
-REQUEST_ID = 100
+STREAMING_REQUEST_ID = 100
+NON_STREAMING_REQUEST_ID = 101
+DISCONNECT_REQUEST_IDS = (200, 201)
 INPUT_TOKEN_IDS = (1, 2, 3, 4)
 MAX_NEW_TOKENS = 5
 # Keep this in sync with llm_backend_lifecycle_test.cpp. It is the saved
@@ -146,6 +152,310 @@ def stop_worker(
     return return_code, None
 
 
+def make_client(
+    socket_path: Path,
+    manifest: ModelManifest,
+    max_pending_requests: int,
+) -> GenerationClient:
+    return GenerationClient(
+        GenerationClientConfig(
+            socket_path=str(socket_path),
+            expected_manifest=manifest,
+            connect_timeout=2.0,
+            handshake_timeout=10.0,
+            max_pending_requests=max_pending_requests,
+            max_delta_events_per_request=manifest.max_output_tokens + 1,
+        )
+    )
+
+
+def require_no_event_after_terminal(handle: GenerationHandle) -> None:
+    try:
+        handle.next_event(timeout=0.0)
+    except StopIteration:
+        return
+    raise AssertionError(
+        f"request {handle.request_id} delivered an event after Terminal"
+    )
+
+
+def collect_success(
+    handle: GenerationHandle,
+    expected_tokens: tuple[int, ...],
+    expected_prompt_tokens: int,
+    timeout: float,
+) -> tuple[tuple[int, ...], Terminal]:
+    tokens, terminal = handle.collect(timeout=timeout)
+    require(
+        tokens == expected_tokens,
+        "IPC output tokens do not match the saved Direct Backend baseline: "
+        f"expected {expected_tokens}, got {tokens}",
+    )
+    require(
+        terminal.request_id == handle.request_id,
+        "Terminal request_id changed",
+    )
+    require(
+        terminal.status.ok,
+        "real Engine request failed: "
+        f"{terminal.status.code}: {terminal.status.message}",
+    )
+    require(
+        terminal.finish_reason == "length",
+        f"expected length finish, got {terminal.finish_reason}",
+    )
+    require(
+        terminal.usage.prompt_tokens == expected_prompt_tokens,
+        "Terminal prompt token usage is incorrect",
+    )
+    require(
+        terminal.usage.completion_tokens == len(expected_tokens),
+        "Terminal completion token usage is incorrect",
+    )
+    require_no_event_after_terminal(handle)
+    return tokens, terminal
+
+
+def run_streaming_consistency_scenario(
+    worker: Path,
+    engine_dir: Path,
+    scenario_dir: Path,
+    manifest: ModelManifest,
+    limits: WorkerLimits,
+    startup_timeout: float,
+    inference_timeout: float,
+) -> None:
+    scenario_dir.mkdir()
+    socket_path = scenario_dir / "worker.sock"
+    config_path = scenario_dir / "worker-config.json"
+    log_path = scenario_dir / "worker.log"
+    write_worker_config(config_path, engine_dir, socket_path, manifest, limits)
+
+    client: Optional[GenerationClient] = None
+    test_failure: Optional[Exception] = None
+    shutdown_failure: Optional[str] = None
+    with log_path.open("w+", encoding="utf-8") as worker_log:
+        process = subprocess.Popen(
+            [str(worker), str(config_path)],
+            stdout=worker_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            wait_for_socket(process, socket_path, startup_timeout)
+            client = make_client(socket_path, manifest, max_pending_requests=1)
+            client.connect()
+
+            initial_stats = client.health(timeout=5.0)
+            require(initial_stats.ready, "Worker must be ready after handshake")
+            require(initial_stats.status.ok, "ready Worker status must be ok")
+
+            streaming_handle = client.submit(
+                GenerationRequest(
+                    request_id=STREAMING_REQUEST_ID,
+                    input_token_ids=INPUT_TOKEN_IDS,
+                    max_new_tokens=MAX_NEW_TOKENS,
+                    timeout_ms=int(inference_timeout * 1000),
+                    trace_id="real-worker-engine-streaming",
+                    streaming=True,
+                ),
+                timeout=10.0,
+            )
+            streaming_tokens, streaming_terminal = collect_success(
+                streaming_handle,
+                EXPECTED_TOKEN_IDS,
+                len(INPUT_TOKEN_IDS),
+                inference_timeout,
+            )
+            wait_for_resources_released(client, timeout=10.0)
+
+            non_streaming_handle = client.submit(
+                GenerationRequest(
+                    request_id=NON_STREAMING_REQUEST_ID,
+                    input_token_ids=INPUT_TOKEN_IDS,
+                    max_new_tokens=MAX_NEW_TOKENS,
+                    timeout_ms=int(inference_timeout * 1000),
+                    trace_id="real-worker-engine-non-streaming",
+                    streaming=False,
+                ),
+                timeout=10.0,
+            )
+            non_streaming_tokens, non_streaming_terminal = collect_success(
+                non_streaming_handle,
+                EXPECTED_TOKEN_IDS,
+                len(INPUT_TOKEN_IDS),
+                inference_timeout,
+            )
+            require(
+                streaming_tokens == non_streaming_tokens,
+                "streaming and non-streaming requests returned different tokens",
+            )
+            require(
+                streaming_terminal.status == non_streaming_terminal.status,
+                "streaming and non-streaming requests returned different statuses",
+            )
+            require(
+                streaming_terminal.finish_reason
+                == non_streaming_terminal.finish_reason,
+                "streaming and non-streaming requests returned different finish reasons",
+            )
+            require(
+                streaming_terminal.usage == non_streaming_terminal.usage,
+                "streaming and non-streaming requests returned different usage",
+            )
+
+            wait_for_resources_released(client, timeout=10.0)
+            require(client.connected, "GenerationClient disconnected after Terminal")
+        except Exception as exception:
+            test_failure = exception
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception as exception:
+                    if test_failure is None:
+                        test_failure = RuntimeError(
+                            f"GenerationClient close failed: {exception}"
+                        )
+            return_code, shutdown_failure = stop_worker(process, timeout=30.0)
+            socket_remained = socket_path.exists()
+            worker_log.flush()
+            worker_log.seek(0)
+            worker_output = worker_log.read()
+
+    if test_failure is not None:
+        raise AssertionError(
+            "streaming consistency scenario failed: "
+            f"{test_failure}\nllm_worker output:\n{worker_output}"
+        ) from test_failure
+    require(shutdown_failure is None, shutdown_failure or "Worker shutdown failed")
+    require(
+        return_code == 0,
+        f"llm_worker exited with code {return_code}\n{worker_output}",
+    )
+    require(not socket_remained, "llm_worker left its UDS path after shutdown")
+
+
+def run_worker_disconnect_scenario(
+    worker: Path,
+    engine_dir: Path,
+    scenario_dir: Path,
+    manifest: ModelManifest,
+    limits: WorkerLimits,
+    startup_timeout: float,
+    inference_timeout: float,
+) -> None:
+    scenario_dir.mkdir()
+    socket_path = scenario_dir / "worker.sock"
+    config_path = scenario_dir / "worker-config.json"
+    log_path = scenario_dir / "worker.log"
+    write_worker_config(config_path, engine_dir, socket_path, manifest, limits)
+
+    client: Optional[GenerationClient] = None
+    test_failure: Optional[Exception] = None
+    shutdown_failure: Optional[str] = None
+    with log_path.open("w+", encoding="utf-8") as worker_log:
+        process = subprocess.Popen(
+            [str(worker), str(config_path)],
+            stdout=worker_log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            wait_for_socket(process, socket_path, startup_timeout)
+            client = make_client(
+                socket_path,
+                manifest,
+                max_pending_requests=len(DISCONNECT_REQUEST_IDS),
+            )
+            client.connect()
+
+            initial_stats = client.health(timeout=5.0)
+            require(initial_stats.ready, "Worker must be ready after handshake")
+            require(initial_stats.status.ok, "ready Worker status must be ok")
+
+            long_input = tuple(1 for _ in range(manifest.max_input_tokens))
+            handles = [
+                client.submit(
+                    GenerationRequest(
+                        request_id=request_id,
+                        input_token_ids=long_input,
+                        max_new_tokens=manifest.max_output_tokens,
+                        timeout_ms=int(inference_timeout * 1000),
+                        trace_id=f"real-worker-disconnect-{request_id}",
+                        streaming=False,
+                    ),
+                    timeout=10.0,
+                )
+                for request_id in DISCONNECT_REQUEST_IDS
+            ]
+
+            process.kill()
+            process.wait(timeout=10.0)
+
+            for handle in handles:
+                _, terminal = handle.collect(timeout=10.0)
+                require(
+                    terminal.request_id == handle.request_id,
+                    "synthetic Terminal request_id changed",
+                )
+                require(
+                    terminal.status.code == "unavailable",
+                    "Worker disconnect did not synthesize an Unavailable Terminal: "
+                    f"request={handle.request_id}, status={terminal.status.code}",
+                )
+                require(
+                    terminal.finish_reason is None,
+                    "synthetic Unavailable Terminal must not have a finish reason",
+                )
+                require(
+                    terminal.usage.prompt_tokens == 0
+                    and terminal.usage.completion_tokens == 0,
+                    "synthetic Unavailable Terminal must not report completed usage",
+                )
+                require_no_event_after_terminal(handle)
+
+            require(
+                not client.connected,
+                "GenerationClient remained connected after Worker SIGKILL",
+            )
+            try:
+                client.health(timeout=1.0)
+            except WorkerUnavailableError:
+                pass
+            else:
+                raise AssertionError(
+                    "health probe succeeded after Worker disconnected"
+                )
+        except Exception as exception:
+            test_failure = exception
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception as exception:
+                    if test_failure is None:
+                        test_failure = RuntimeError(
+                            f"GenerationClient close failed: {exception}"
+                        )
+            return_code, shutdown_failure = stop_worker(process, timeout=30.0)
+            worker_log.flush()
+            worker_log.seek(0)
+            worker_output = worker_log.read()
+
+    if test_failure is not None:
+        raise AssertionError(
+            "Worker disconnect scenario failed: "
+            f"{test_failure}\nllm_worker output:\n{worker_output}"
+        ) from test_failure
+    require(shutdown_failure is None, shutdown_failure or "Worker shutdown failed")
+    require(
+        return_code == -signal.SIGKILL,
+        "Worker disconnect scenario did not observe the expected SIGKILL: "
+        f"return_code={return_code}\nllm_worker output:\n{worker_output}",
+    )
+
+
 def run_test(
     worker: Path,
     engine_dir: Path,
@@ -167,121 +477,29 @@ def run_test(
 
     with tempfile.TemporaryDirectory(prefix="kim-llm-e2e-") as directory:
         test_dir = Path(directory)
-        socket_path = test_dir / "worker.sock"
-        config_path = test_dir / "worker-config.json"
-        log_path = test_dir / "worker.log"
-        write_worker_config(
-            config_path,
+        run_streaming_consistency_scenario(
+            worker,
             engine_dir,
-            socket_path,
+            test_dir / "streaming-consistency",
             manifest,
             limits,
+            startup_timeout,
+            inference_timeout,
         )
-
-        client: Optional[GenerationClient] = None
-        test_failure: Optional[Exception] = None
-        shutdown_failure: Optional[str] = None
-        with log_path.open("w+", encoding="utf-8") as worker_log:
-            process = subprocess.Popen(
-                [str(worker), str(config_path)],
-                stdout=worker_log,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            try:
-                wait_for_socket(process, socket_path, startup_timeout)
-                client = GenerationClient(
-                    GenerationClientConfig(
-                        socket_path=str(socket_path),
-                        expected_manifest=manifest,
-                        connect_timeout=2.0,
-                        handshake_timeout=10.0,
-                        max_pending_requests=1,
-                        max_delta_events_per_request=MAX_NEW_TOKENS + 1,
-                    )
-                )
-                client.connect()
-
-                initial_stats = client.health(timeout=5.0)
-                require(initial_stats.ready, "Worker must be ready after handshake")
-                require(initial_stats.status.ok, "ready Worker status must be ok")
-
-                handle = client.submit(
-                    GenerationRequest(
-                        request_id=REQUEST_ID,
-                        input_token_ids=INPUT_TOKEN_IDS,
-                        max_new_tokens=MAX_NEW_TOKENS,
-                        timeout_ms=int(inference_timeout * 1000),
-                        trace_id="real-worker-engine-e2e",
-                        streaming=True,
-                    ),
-                    timeout=10.0,
-                )
-                tokens, terminal = handle.collect(timeout=inference_timeout)
-
-                require(
-                    tokens == EXPECTED_TOKEN_IDS,
-                    "IPC output tokens do not match the saved Direct Backend "
-                    f"baseline: expected {EXPECTED_TOKEN_IDS}, got {tokens}",
-                )
-                require(terminal.request_id == REQUEST_ID, "Terminal request_id changed")
-                require(
-                    terminal.status.ok,
-                    "real Engine request failed: "
-                    f"{terminal.status.code}: {terminal.status.message}",
-                )
-                require(
-                    terminal.finish_reason == "length",
-                    f"expected length finish, got {terminal.finish_reason}",
-                )
-                require(
-                    terminal.usage.prompt_tokens == len(INPUT_TOKEN_IDS),
-                    "Terminal prompt token usage is incorrect",
-                )
-                require(
-                    terminal.usage.completion_tokens == len(EXPECTED_TOKEN_IDS),
-                    "Terminal completion token usage is incorrect",
-                )
-                try:
-                    handle.next_event(timeout=0.0)
-                except StopIteration:
-                    pass
-                else:
-                    raise AssertionError("an event was delivered after Terminal")
-
-                wait_for_resources_released(client, timeout=10.0)
-                require(client.connected, "GenerationClient disconnected after Terminal")
-            except Exception as exception:
-                test_failure = exception
-            finally:
-                if client is not None:
-                    try:
-                        client.close()
-                    except Exception as exception:
-                        if test_failure is None:
-                            test_failure = RuntimeError(
-                                f"GenerationClient close failed: {exception}"
-                            )
-                return_code, shutdown_failure = stop_worker(process, timeout=30.0)
-                socket_remained = socket_path.exists()
-                worker_log.flush()
-                worker_log.seek(0)
-                worker_output = worker_log.read()
-
-        if test_failure is not None:
-            raise AssertionError(
-                f"{test_failure}\nllm_worker output:\n{worker_output}"
-            ) from test_failure
-        require(shutdown_failure is None, shutdown_failure or "Worker shutdown failed")
-        require(
-            return_code == 0,
-            f"llm_worker exited with code {return_code}\n{worker_output}",
+        run_worker_disconnect_scenario(
+            worker,
+            engine_dir,
+            test_dir / "worker-disconnect",
+            manifest,
+            limits,
+            startup_timeout,
+            inference_timeout,
         )
-        require(not socket_remained, "llm_worker left its UDS path after shutdown")
 
     print(
-        "[PASS] real llm_worker -> TensorRT-LLM Engine -> "
-        f"Python GenerationClient: tokens={EXPECTED_TOKEN_IDS}"
+        "[PASS] A6-4 real Worker/Engine integration: "
+        f"streaming/non-streaming tokens={EXPECTED_TOKEN_IDS}; "
+        f"disconnect requests={DISCONNECT_REQUEST_IDS} -> unavailable"
     )
 
 
