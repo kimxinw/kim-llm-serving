@@ -5,7 +5,6 @@
 
 # Local Markdown documentation
 *.md
-!/README.md
 
 # CMake build trees and generated metadata
 build*/
