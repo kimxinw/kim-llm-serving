@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import signal
 import sys
 import tempfile
 import time
@@ -117,6 +118,50 @@ class FakeConnection:
 
 
 class HttpBenchmarkContractTest(unittest.TestCase):
+    def test_managed_gateway_stop_accepts_harness_sigterm(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="kim-http-gateway-stop-") as directory:
+            root = Path(directory)
+            gateway = BENCHMARK.ManagedGateway(
+                root / "gateway.json",
+                "http://127.0.0.1:8000",
+                root / "gateway.log",
+                10.0,
+            )
+            process = mock.Mock()
+            process.poll.return_value = None
+            process.returncode = -signal.SIGTERM
+            log = mock.Mock()
+            gateway._process = process
+            gateway._log = log
+
+            gateway.stop()
+
+            process.terminate.assert_called_once_with()
+            process.wait.assert_called_once_with(timeout=45.0)
+            log.close.assert_called_once_with()
+
+    def test_managed_gateway_stop_rejects_unexpected_sigterm(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="kim-http-gateway-stop-") as directory:
+            root = Path(directory)
+            gateway = BENCHMARK.ManagedGateway(
+                root / "gateway.json",
+                "http://127.0.0.1:8000",
+                root / "gateway.log",
+                10.0,
+            )
+            process = mock.Mock()
+            process.poll.return_value = -signal.SIGTERM
+            process.returncode = -signal.SIGTERM
+            log = mock.Mock()
+            gateway._process = process
+            gateway._log = log
+
+            with self.assertRaisesRegex(RuntimeError, "exited with code -15"):
+                gateway.stop()
+
+            process.terminate.assert_not_called()
+            log.close.assert_called_once_with()
+
     def test_sse_client_records_text_usage_and_terminal(self) -> None:
         events = (
             b'data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'

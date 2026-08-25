@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -130,10 +131,12 @@ class ManagedGateway:
     def stop(self) -> None:
         process = self._process
         self._process = None
+        terminated_by_harness = False
         try:
             if process is None:
                 return
             if process.poll() is None:
+                terminated_by_harness = True
                 process.terminate()
                 try:
                     process.wait(timeout=45.0)
@@ -143,7 +146,10 @@ class ManagedGateway:
                     raise RuntimeError(
                         "Gateway did not stop after SIGTERM and was killed"
                     ) from exception
-            if process.returncode != 0:
+            expected_return_codes = {0}
+            if terminated_by_harness:
+                expected_return_codes.add(-signal.SIGTERM)
+            if process.returncode not in expected_return_codes:
                 raise RuntimeError(
                     f"Gateway exited with code {process.returncode}; "
                     f"see {self._log_path}"
