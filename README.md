@@ -23,7 +23,7 @@
 | CPU-only configure/build/test | 已完成模块边界 |
 | Tokenizer、OpenAI API、SSE | 最小 Gateway 已完成（`0581c0a`） |
 | HTTP/SSE Benchmark Harness | closed/open-loop、有界 `max_inflight`、SLO goodput、拒绝分类、慢客户端分组与证据门禁已完成（`c37cc81`）；Gateway 正常停止误判已修复（`c3f24ab`） |
-| 可观测性与正式性能矩阵 | Gateway/SSE/Worker egress 高水位及 Admission 快照已接入；真实 HTTP 分层数据与正式过载矩阵未完成 |
+| 可观测性与正式性能矩阵 | Gateway/SSE/Worker egress 高水位及 Admission 快照已接入；C1 Direct/IPC/HTTP 正式分层基线已完成，正式过载矩阵未完成 |
 
 ## 架构边界
 
@@ -128,9 +128,9 @@ Session egress 当前值/高水位；metrics 抓取不会为不可用 Worker 隐
 `14/14 PASS`。提交 `c3f24ab` 修复 Harness 主动发送 `SIGTERM` 后将 Gateway
 预期返回码 `-15` 误判为失败的问题，并补充主动停止与意外退出的区分测试。修复后的
 真实 Engine C1 开发冒烟已稳定生成 summary、CSV 和 Worker/Gateway 日志，5 个测量
-请求全部成功且 `resources_released=true`。该轮运行时工作区仍为 dirty，只作为修复
-验证；干净提交上的固定 workload 分层数据、慢客户端隔离数据和正式 open-loop
-过载矩阵仍未完成，因此不声明 HTTP 开销或 SLO goodput 收益。
+请求全部成功且 `resources_released=true`。该轮用于修复验证；随后由三路径总控在干净
+提交上完成正式 fixed-workload 分层基线。慢客户端隔离和正式 open-loop 过载矩阵仍
+未完成，因此不声明 SLO goodput 收益。
 
 ## Direct / IPC / HTTP 分层基线
 
@@ -166,6 +166,26 @@ python3 benchmark/run_direct_ipc_http_benchmark.py \
 轮换才能标记 `minimum_repetitions_met=true` 和
 `balanced_execution_order_cycle=true`。单轮 `--allow-dirty` 仅用于开发冒烟。
 新增三路径比较契约后，当前无 GPU 回归为 `15/15 PASS`。
+
+提交 `3f831fa` 上已完成 C1/ISL17/OSL32 正式实验：三条路径按
+`Direct→IPC→HTTP`、`IPC→HTTP→Direct`、`HTTP→Direct→IPC` 轮换，每路径每轮
+200 个测量请求，共 3 次重复。600 组 Direct/IPC Token IDs 完全一致，HTTP 文本与
+对应 Token IDs 的固定 Tokenizer 解码逐请求一致；所有请求成功，无 Rejected、
+Terminal Error 或 Client Failure，HTTP 每轮结束后资源均回到 0。
+
+| 指标 | Direct 均值 | IPC 均值 | HTTP 均值 | IPC − Direct | HTTP − IPC |
+|---|---:|---:|---:|---:|---:|
+| TTFT P50 | `10.676 ms` | `11.473 ms` | `13.388 ms` | `+0.797 ms`（`+7.48%`） | `+1.915 ms`（`+16.70%`） |
+| TPOT P50 | `8.270 ms` | `8.332 ms` | `8.352 ms` | `+0.061 ms`（`+0.74%`） | `+0.020 ms`（`+0.24%`） |
+| E2E P50 | `267.131 ms` | `269.817 ms` | `272.735 ms` | `+2.686 ms`（`+1.01%`） | `+2.918 ms`（`+1.08%`） |
+| request throughput | `3.740/s` | `3.704/s` | `3.664/s` | `-0.97%` | `-1.07%` |
+| output token throughput | `119.671/s` | `118.514/s` | `117.244/s` | `-0.97%` | `-1.07%` |
+
+机器可读的聚合结果及每轮 Direct/IPC/HTTP summary 保存在
+[`benchmark/evidence/direct-ipc-http-c1-isl17-osl32-r3`](benchmark/evidence/direct-ipc-http-c1-isl17-osl32-r3)。
+这里的 HTTP TTFT 从客户端请求开始计时，E2E 直到 SSE `[DONE]`，因此 HTTP 增量表示
+完整服务层成本，不是 HTTP 或 UDS 系统调用微基准；结论仅适用于固定模型、Engine、
+RTX 3060 和上述 workload。
 
 ## Direct / IPC 增量开销
 
@@ -214,4 +234,6 @@ Token IDs 完全一致，失败、Rejected、Backpressure 和 Cancel 均为 0，
 
 ## 路线图
 
-当前收尾顺序和验收条件见 [求职.md](求职.md)；长期路线与历史设计参考见 [docs/LLM_INFERENCE_PLAN.md](docs/LLM_INFERENCE_PLAN.md)。
+下一阶段依次完成慢客户端隔离、open-loop 过载矩阵、CPU CI 和一键复现入口。
+当前请求链路和故障传播说明见
+[`docs/Inference_Pipeline.md`](docs/Inference_Pipeline.md)。
