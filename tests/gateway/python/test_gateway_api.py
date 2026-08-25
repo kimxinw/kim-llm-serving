@@ -58,6 +58,9 @@ class GatewayApiTest(unittest.TestCase):
     def test_health_ready_models_and_non_streaming_completion(self) -> None:
         self.assertEqual(self.client.get("/healthz").status_code, 200)
         self.assertEqual(self.client.get("/readyz").status_code, 200)
+        metrics = self.client.get("/metrics")
+        self.assertEqual(metrics.status_code, 200)
+        self.assertIn("kim_llm_worker_active_requests 0", metrics.text)
         models = self.client.get("/v1/models").json()
         self.assertEqual(models["data"][0]["id"], "tinyllama")
 
@@ -113,6 +116,14 @@ class GatewayApiTest(unittest.TestCase):
         self.assertEqual(text, "ab")
         self.assertEqual(payloads[-1]["choices"], [])
         self.assertEqual(payloads[-1]["usage"]["completion_tokens"], 2)
+
+    def test_metrics_does_not_reconnect_an_unavailable_worker(self) -> None:
+        self.client_impl.connected = False
+        metrics = self.client.get("/metrics")
+        self.assertEqual(metrics.status_code, 200)
+        self.assertIn("kim_llm_gateway_connected 0", metrics.text)
+        self.assertNotIn("kim_llm_worker_active_requests", metrics.text)
+        self.assertFalse(self.client_impl.connected)
 
 
 if __name__ == "__main__":

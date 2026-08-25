@@ -4,7 +4,7 @@ import json
 import queue
 import tempfile
 import unittest
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
@@ -316,6 +316,34 @@ class GatewayRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(await session.next_event(1.0), GatewayTerminal)
         snapshot = overflow_service.metrics.snapshot()
         self.assertEqual(snapshot["backpressure_cancels"], 1)
+
+    async def test_metrics_expose_gateway_and_worker_resource_watermarks(self) -> None:
+        self.client.next_events = [
+            TokenDelta(1, 0, (1,)),
+            Terminal(1, Status(), "length", Usage(2, 1)),
+        ]
+        session = await self.service.submit(make_request())
+        await session.wait_done(1.0)
+
+        snapshot = self.service.metrics.snapshot()
+        self.assertEqual(snapshot["active"], 0)
+        self.assertEqual(snapshot["active_high_watermark"], 1)
+        worker_stats = replace(
+            ready_stats(),
+            session_egress_high_watermark_frames=7,
+            session_egress_high_watermark_bytes=4096,
+            rejected_requests=2,
+        )
+        metrics = self.service.render_metrics(worker_stats)
+        self.assertIn(
+            "kim_llm_gateway_active_requests_high_watermark 1",
+            metrics,
+        )
+        self.assertIn(
+            "kim_llm_worker_session_egress_high_watermark_frames 7",
+            metrics,
+        )
+        self.assertIn("kim_llm_worker_requests_rejected_total 2", metrics)
 
     async def test_http_disconnect_cancel_continues_drain_to_terminal(self) -> None:
         self.client.next_events = []

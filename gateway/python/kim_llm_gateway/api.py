@@ -171,8 +171,11 @@ def create_app(
                 "kim_llm_gateway_connected 0\nkim_llm_gateway_ready 0\n",
                 media_type="text/plain; version=0.0.4",
             )
+        # Metrics collection must not reconnect an unavailable Worker. Gateway-
+        # local metrics remain observable and connected/ready describe the gap.
+        worker_stats = await state.service.collect_worker_stats()
         return PlainTextResponse(
-            state.service.render_metrics(),
+            state.service.render_metrics(worker_stats),
             media_type="text/plain; version=0.0.4",
         )
 

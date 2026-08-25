@@ -429,6 +429,18 @@ if(BUILD_TESTING)
                 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
         )
         add_test(
+            NAME llm_python_http_benchmark_contract
+            COMMAND
+                "${Python3_EXECUTABLE}"
+                "${KIM_LLM_ROOT}/tests/benchmark/test_http_benchmark.py"
+        )
+        set_tests_properties(
+            llm_python_http_benchmark_contract
+            PROPERTIES
+                TIMEOUT 20
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        )
+        add_test(
             NAME llm_python_gateway_core_contract
             COMMAND
                 "${Python3_EXECUTABLE}"

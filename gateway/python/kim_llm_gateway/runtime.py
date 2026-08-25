@@ -154,6 +154,7 @@ class GatewayMetrics:
         self._offered = 0
         self._accepted = 0
         self._active = 0
+        self._active_high_watermark = 0
         self._rejected: collections.Counter[str] = collections.Counter()
         self._terminals: collections.Counter[str] = collections.Counter()
         self._disconnect_cancels = 0
@@ -170,6 +171,10 @@ class GatewayMetrics:
         with self._lock:
             self._accepted += 1
             self._active += 1
+            self._active_high_watermark = max(
+                self._active_high_watermark,
+                self._active,
+            )
 
     def rejected(self, code: str) -> None:
         with self._lock:
@@ -212,6 +217,7 @@ class GatewayMetrics:
                 "offered": self._offered,
                 "accepted": self._accepted,
                 "active": self._active,
+                "active_high_watermark": self._active_high_watermark,
                 "rejected": dict(self._rejected),
                 "terminals": dict(self._terminals),
                 "disconnect_cancels": self._disconnect_cancels,
@@ -221,7 +227,13 @@ class GatewayMetrics:
                 "sse_buffer_high_watermark": self._sse_buffer_high_watermark,
             }
 
-    def render_prometheus(self, *, connected: bool, ready: bool) -> str:
+    def render_prometheus(
+        self,
+        *,
+        connected: bool,
+        ready: bool,
+        worker_stats: Optional[Stats] = None,
+    ) -> str:
         snapshot = self.snapshot()
         lines = [
             "# HELP kim_llm_gateway_connected Whether the IPC client is connected.",
@@ -236,6 +248,9 @@ class GatewayMetrics:
             f"kim_llm_gateway_requests_accepted_total {snapshot['accepted']}",
             "# TYPE kim_llm_gateway_active_requests gauge",
             f"kim_llm_gateway_active_requests {snapshot['active']}",
+            "# TYPE kim_llm_gateway_active_requests_high_watermark gauge",
+            "kim_llm_gateway_active_requests_high_watermark "
+            f"{snapshot['active_high_watermark']}",
             "# TYPE kim_llm_gateway_http_disconnect_cancels_total counter",
             "kim_llm_gateway_http_disconnect_cancels_total "
             f"{snapshot['disconnect_cancels']}",
@@ -252,6 +267,40 @@ class GatewayMetrics:
             "kim_llm_gateway_sse_buffer_high_watermark "
             f"{snapshot['sse_buffer_high_watermark']}",
         ]
+        if worker_stats is not None:
+            lines.extend(
+                (
+                    "# TYPE kim_llm_worker_active_requests gauge",
+                    f"kim_llm_worker_active_requests {worker_stats.active_requests}",
+                    "# TYPE kim_llm_worker_reserved_input_tokens gauge",
+                    "kim_llm_worker_reserved_input_tokens "
+                    f"{worker_stats.reserved_input_tokens}",
+                    "# TYPE kim_llm_worker_reserved_output_tokens gauge",
+                    "kim_llm_worker_reserved_output_tokens "
+                    f"{worker_stats.reserved_output_tokens}",
+                    "# TYPE kim_llm_worker_session_egress_frames gauge",
+                    "kim_llm_worker_session_egress_frames "
+                    f"{worker_stats.session_egress_frames}",
+                    "# TYPE kim_llm_worker_session_egress_bytes gauge",
+                    "kim_llm_worker_session_egress_bytes "
+                    f"{worker_stats.session_egress_bytes}",
+                    "# TYPE kim_llm_worker_session_egress_high_watermark_frames gauge",
+                    "kim_llm_worker_session_egress_high_watermark_frames "
+                    f"{worker_stats.session_egress_high_watermark_frames}",
+                    "# TYPE kim_llm_worker_session_egress_high_watermark_bytes gauge",
+                    "kim_llm_worker_session_egress_high_watermark_bytes "
+                    f"{worker_stats.session_egress_high_watermark_bytes}",
+                    "# TYPE kim_llm_worker_requests_rejected_total counter",
+                    "kim_llm_worker_requests_rejected_total "
+                    f"{worker_stats.rejected_requests}",
+                    "# TYPE kim_llm_worker_backpressure_requests_total counter",
+                    "kim_llm_worker_backpressure_requests_total "
+                    f"{worker_stats.backpressure_requests}",
+                    "# TYPE kim_llm_worker_cancelled_requests_total counter",
+                    "kim_llm_worker_cancelled_requests_total "
+                    f"{worker_stats.cancelled_requests}",
+                )
+            )
         rejected = snapshot["rejected"]
         assert isinstance(rejected, dict)
         lines.append("# TYPE kim_llm_gateway_requests_rejected_total counter")
@@ -596,6 +645,18 @@ class GatewayService:
             self._last_readiness_error = None
             return stats
 
+    async def collect_worker_stats(self) -> Optional[Stats]:
+        """Return a best-effort Worker snapshot without reconnecting it."""
+        if not self._client.connected:
+            return None
+        try:
+            return await asyncio.to_thread(
+                self._client.health,
+                self._options.health_timeout_seconds,
+            )
+        except Exception:
+            return None
+
     async def submit(self, request: GatewayRequest) -> GatewaySession:
         self._metrics.offered()
         if self._stopping:
@@ -770,10 +831,11 @@ class GatewayService:
         if self._detached_tasks:
             await asyncio.gather(*tuple(self._detached_tasks), return_exceptions=True)
 
-    def render_metrics(self) -> str:
+    def render_metrics(self, worker_stats: Optional[Stats] = None) -> str:
         return self._metrics.render_prometheus(
             connected=self.connected,
             ready=self.ready,
+            worker_stats=worker_stats,
         )
 
     def _session_finished(self, session: GatewaySession) -> None:
