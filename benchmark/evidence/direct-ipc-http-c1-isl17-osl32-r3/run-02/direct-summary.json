@@ -1,0 +1,22 @@
+{
+  "schema_version": 2,
+  "benchmark_path": "direct",
+  "engine_dir": "/home/xinwang/workspaces/trtllm016-spike/engines/tinyllama-1.1b-chat-fp16-tp1-bs8",
+  "concurrency": 1,
+  "warmup_requests": 5,
+  "measured_requests": 200,
+  "successful_requests": 200,
+  "failed_requests": 0,
+  "input_tokens": 17,
+  "input_token_ids": [529,29989,1792,29989,29958,13,10994,2,29871,13,29966,29989,465,22137,29989,29958,13],
+  "max_new_tokens": 32,
+  "streaming": true,
+  "sampling": {"temperature":1.0,"top_k":1,"top_p":1.0,"random_seed":0},
+  "load_ms": 7960.166287,
+  "duration_seconds": 53.546580,
+  "request_throughput_rps": 3.735066,
+  "output_token_throughput_tps": 119.522106,
+  "ttft_ms": {"p50":10.800,"p95":11.321,"p99":11.584},
+  "tpot_ms": {"p50":8.285,"p95":8.381,"p99":8.439},
+  "e2e_ms": {"p50":267.574,"p95":270.926,"p99":273.072}
+}

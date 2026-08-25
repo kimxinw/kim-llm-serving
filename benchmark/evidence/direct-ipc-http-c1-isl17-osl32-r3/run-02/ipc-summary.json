@@ -1,0 +1,101 @@
+{
+  "schema_version": 2,
+  "benchmark_path": "ipc",
+  "engine_dir": "/home/xinwang/workspaces/trtllm016-spike/engines/tinyllama-1.1b-chat-fp16-tp1-bs8",
+  "concurrency": 1,
+  "warmup_requests": 5,
+  "measured_requests": 200,
+  "successful_requests": 200,
+  "failed_requests": 0,
+  "input_tokens": 17,
+  "input_token_ids": [
+    529,
+    29989,
+    1792,
+    29989,
+    29958,
+    13,
+    10994,
+    2,
+    29871,
+    13,
+    29966,
+    29989,
+    465,
+    22137,
+    29989,
+    29958,
+    13
+  ],
+  "max_new_tokens": 32,
+  "streaming": true,
+  "sampling": {
+    "temperature": 1.0,
+    "top_k": 1,
+    "top_p": 1.0,
+    "random_seed": 0
+  },
+  "worker_startup_ms": 8273.55076,
+  "client_connect_ms": 1.617719,
+  "duration_seconds": 53.888761879,
+  "request_throughput_rps": 3.711348953406523,
+  "output_token_throughput_tps": 118.76316650900874,
+  "ttft_ms": {
+    "p50": 11.434158,
+    "p95": 11.977807,
+    "p99": 12.09722
+  },
+  "tpot_ms": {
+    "p50": 8.318904645161291,
+    "p95": 8.399363967741936,
+    "p99": 8.525984612903226
+  },
+  "e2e_ms": {
+    "p50": 269.299368,
+    "p95": 272.158792,
+    "p99": 275.65327
+  },
+  "worker_stats_before_measurement": {
+    "probe_id": 2,
+    "ready": true,
+    "status": {
+      "code": "ok",
+      "message": ""
+    },
+    "uptime_ms": 0,
+    "active_requests": 0,
+    "reserved_input_tokens": 0,
+    "reserved_output_tokens": 0,
+    "session_egress_frames": 0,
+    "session_egress_bytes": 0,
+    "session_egress_high_watermark_frames": 2,
+    "session_egress_high_watermark_bytes": 428,
+    "rejected_requests": 0,
+    "backpressure_requests": 0,
+    "cancelled_requests": 0
+  },
+  "worker_stats_after_measurement": {
+    "probe_id": 3,
+    "ready": true,
+    "status": {
+      "code": "ok",
+      "message": ""
+    },
+    "uptime_ms": 0,
+    "active_requests": 0,
+    "reserved_input_tokens": 0,
+    "reserved_output_tokens": 0,
+    "session_egress_frames": 0,
+    "session_egress_bytes": 0,
+    "session_egress_high_watermark_frames": 2,
+    "session_egress_high_watermark_bytes": 430,
+    "rejected_requests": 0,
+    "backpressure_requests": 0,
+    "cancelled_requests": 0
+  },
+  "measurement_counter_deltas": {
+    "rejected_requests": 0,
+    "backpressure_requests": 0,
+    "cancelled_requests": 0
+  }
+}
