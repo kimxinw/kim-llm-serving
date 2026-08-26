@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "benchmark": "closed_loop_slo_profile_calibration",
+  "created_at_utc": "2026-08-26T09:37:26.606865+00:00",
+  "git_commit": "2e306ce12c774762a36f5cb19c104401f868aea6",
+  "git_dirty": false,
+  "repetitions": 3,
+  "measured_requests_per_run": 160,
+  "active_buckets": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "profile": {
+    "model_id": "TinyLlama-1.1B-Chat-v1.0",
+    "revision": "trtllm-0.16.0-engine",
+    "engine_fingerprint": "f1ca6af9b682bc31ab44f339aefa521a54e705099ccf0508fa1c807f5f0233f7",
+    "ttft_slo_ms": 50.0,
+    "safety_margin_ms": 3.0,
+    "entries": [
+      {
+        "max_input_tokens": 32,
+        "active_requests": 1,
+        "predicted_ttft_p95_ms": 15.229104
+      },
+      {
+        "max_input_tokens": 128,
+        "active_requests": 1,
+        "predicted_ttft_p95_ms": 20.567905
+      },
+      {
+        "max_input_tokens": 32,
+        "active_requests": 2,
+        "predicted_ttft_p95_ms": 22.379397
+      },
+      {
+        "max_input_tokens": 128,
+        "active_requests": 2,
+        "predicted_ttft_p95_ms": 45.988162
+      },
+      {
+        "max_input_tokens": 32,
+        "active_requests": 4,
+        "predicted_ttft_p95_ms": 51.722064
+      },
+      {
+        "max_input_tokens": 128,
+        "active_requests": 4,
+        "predicted_ttft_p95_ms": 53.609325
+      },
+      {
+        "max_input_tokens": 32,
+        "active_requests": 8,
+        "predicted_ttft_p95_ms": 83.310895
+      },
+      {
+        "max_input_tokens": 128,
+        "active_requests": 8,
+        "predicted_ttft_p95_ms": 81.562808
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "workload_index": 0,
+      "max_input_tokens": 32,
+      "active_requests": 1,
+      "ttft_p95_ms_samples": [
+        15.073504,
+        15.187704,
+        15.229104
+      ],
+      "ttft_p95_ms_mean": 15.163437333333334,
+      "ttft_p95_ms_sample_stdev": 0.0805884193500116,
+      "profile_prediction_ms": 15.229104
+    },
+    {
+      "workload_index": 1,
+      "max_input_tokens": 128,
+      "active_requests": 1,
+      "ttft_p95_ms_samples": [
+        19.767905,
+        20.567905,
+        20.492784
+      ],
+      "ttft_p95_ms_mean": 20.276197999999997,
+      "ttft_p95_ms_sample_stdev": 0.4417942072356772,
+      "profile_prediction_ms": 20.567905
+    },
+    {
+      "workload_index": 0,
+      "max_input_tokens": 32,
+      "active_requests": 2,
+      "ttft_p95_ms_samples": [
+        20.11267,
+        22.379397,
+        19.333805
+      ],
+      "ttft_p95_ms_mean": 20.608624000000002,
+      "ttft_p95_ms_sample_stdev": 1.5822090365065542,
+      "profile_prediction_ms": 22.379397
+    },
+    {
+      "workload_index": 1,
+      "max_input_tokens": 128,
+      "active_requests": 2,
+      "ttft_p95_ms_samples": [
+        40.650575,
+        45.988162,
+        39.462959
+      ],
+      "ttft_p95_ms_mean": 42.033898666666666,
+      "ttft_p95_ms_sample_stdev": 3.4755944560423537,
+      "profile_prediction_ms": 45.988162
+    },
+    {
+      "workload_index": 0,
+      "max_input_tokens": 32,
+      "active_requests": 4,
+      "ttft_p95_ms_samples": [
+        49.793427,
+        51.722064,
+        48.329694
+      ],
+      "ttft_p95_ms_mean": 49.948395000000005,
+      "ttft_p95_ms_sample_stdev": 1.7014860754625645,
+      "profile_prediction_ms": 51.722064
+    },
+    {
+      "workload_index": 1,
+      "max_input_tokens": 128,
+      "active_requests": 4,
+      "ttft_p95_ms_samples": [
+        51.063469,
+        53.609325,
+        50.533452
+      ],
+      "ttft_p95_ms_mean": 51.73541533333333,
+      "ttft_p95_ms_sample_stdev": 1.6443486808436754,
+      "profile_prediction_ms": 53.609325
+    },
+    {
+      "workload_index": 0,
+      "max_input_tokens": 32,
+      "active_requests": 8,
+      "ttft_p95_ms_samples": [
+        80.457789,
+        83.310895,
+        81.505948
+      ],
+      "ttft_p95_ms_mean": 81.75821066666667,
+      "ttft_p95_ms_sample_stdev": 1.443184257658851,
+      "profile_prediction_ms": 83.310895
+    },
+    {
+      "workload_index": 1,
+      "max_input_tokens": 128,
+      "active_requests": 8,
+      "ttft_p95_ms_samples": [
+        79.982261,
+        81.473973,
+        81.562808
+      ],
+      "ttft_p95_ms_mean": 81.00634733333334,
+      "ttft_p95_ms_sample_stdev": 0.8879963557900122,
+      "profile_prediction_ms": 81.562808
+    }
+  ],
+  "all_resources_released": true
+}

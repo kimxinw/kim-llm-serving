@@ -1,0 +1,49 @@
+{
+  "model_id": "TinyLlama-1.1B-Chat-v1.0",
+  "revision": "trtllm-0.16.0-engine",
+  "engine_fingerprint": "f1ca6af9b682bc31ab44f339aefa521a54e705099ccf0508fa1c807f5f0233f7",
+  "ttft_slo_ms": 50.0,
+  "safety_margin_ms": 3.0,
+  "entries": [
+    {
+      "max_input_tokens": 32,
+      "active_requests": 1,
+      "predicted_ttft_p95_ms": 15.229104
+    },
+    {
+      "max_input_tokens": 128,
+      "active_requests": 1,
+      "predicted_ttft_p95_ms": 20.567905
+    },
+    {
+      "max_input_tokens": 32,
+      "active_requests": 2,
+      "predicted_ttft_p95_ms": 22.379397
+    },
+    {
+      "max_input_tokens": 128,
+      "active_requests": 2,
+      "predicted_ttft_p95_ms": 45.988162
+    },
+    {
+      "max_input_tokens": 32,
+      "active_requests": 4,
+      "predicted_ttft_p95_ms": 51.722064
+    },
+    {
+      "max_input_tokens": 128,
+      "active_requests": 4,
+      "predicted_ttft_p95_ms": 53.609325
+    },
+    {
+      "max_input_tokens": 32,
+      "active_requests": 8,
+      "predicted_ttft_p95_ms": 83.310895
+    },
+    {
+      "max_input_tokens": 128,
+      "active_requests": 8,
+      "predicted_ttft_p95_ms": 81.562808
+    }
+  ]
+}
