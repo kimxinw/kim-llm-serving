@@ -175,6 +175,7 @@ def parse_options(argv: Optional[Sequence[str]] = None) -> BenchmarkOptions:
     messages = parser.add_mutually_exclusive_group(required=True)
     messages.add_argument("--prompt")
     messages.add_argument("--messages-file", type=Path)
+    messages.add_argument("--workloads-file", type=Path)
     parser.add_argument(
         "--mode",
         choices=("closed-loop", "open-loop"),
@@ -182,6 +183,27 @@ def parse_options(argv: Optional[Sequence[str]] = None) -> BenchmarkOptions:
     )
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--max-inflight", type=int, default=MAX_CONCURRENCY)
+    parser.add_argument(
+        "--admission-strategy",
+        choices=("fixed-concurrency", "token-budget", "profile-guided"),
+        default="fixed-concurrency",
+    )
+    parser.add_argument(
+        "--worker-max-active-requests",
+        type=int,
+        default=MAX_CONCURRENCY,
+    )
+    parser.add_argument(
+        "--worker-max-total-input-tokens",
+        type=int,
+        default=MAX_CONCURRENCY * MAX_INPUT_TOKENS,
+    )
+    parser.add_argument(
+        "--worker-max-reserved-output-tokens",
+        type=int,
+        default=MAX_CONCURRENCY * MAX_OUTPUT_TOKENS,
+    )
+    parser.add_argument("--slo-profile", type=Path)
     parser.add_argument("--warmup-requests", type=int, required=True)
     parser.add_argument("--measured-requests", type=int, required=True)
     parser.add_argument("--max-new-tokens", type=int, required=True)
@@ -257,8 +279,8 @@ def parse_options(argv: Optional[Sequence[str]] = None) -> BenchmarkOptions:
         parser.error("slow_read_delay_ms must be finite and non-negative")
     if args.slow_request_every and args.slow_read_delay_ms <= 0:
         parser.error("slow_request_every requires a positive slow_read_delay_ms")
-    if not 1 <= args.max_pending_requests <= MAX_CONCURRENCY:
-        parser.error(f"max_pending_requests must be in [1, {MAX_CONCURRENCY}]")
+    if not 1 <= args.max_pending_requests <= 256:
+        parser.error("max_pending_requests must be in [1, 256]")
     if args.max_client_delta_events_per_request <= 0:
         parser.error("max_client_delta_events_per_request must be positive")
     if not 1 <= args.max_sse_delta_events_per_request <= args.max_client_delta_events_per_request:
@@ -269,6 +291,32 @@ def parse_options(argv: Optional[Sequence[str]] = None) -> BenchmarkOptions:
         parser.error("benchmark-managed Gateway must bind to 127.0.0.1")
     if not 0 <= args.port <= 65535:
         parser.error("port must be in [0, 65535]")
+    for name in (
+        "worker_max_active_requests",
+        "worker_max_total_input_tokens",
+        "worker_max_reserved_output_tokens",
+    ):
+        if getattr(args, name) <= 0:
+            parser.error(f"{name} must be positive")
+    if args.worker_max_active_requests > MAX_CONCURRENCY:
+        parser.error(
+            f"worker_max_active_requests must not exceed {MAX_CONCURRENCY}"
+        )
+    if args.admission_strategy == "profile-guided" and args.slo_profile is None:
+        parser.error("profile-guided strategy requires --slo-profile")
+    if args.admission_strategy != "profile-guided" and args.slo_profile is not None:
+        parser.error("--slo-profile is only valid for profile-guided strategy")
+
+    parsed_slo_policy = None
+    if args.slo_profile is not None:
+        try:
+            parsed_slo_policy = json.loads(
+                args.slo_profile.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, ValueError) as exception:
+            parser.error(f"failed to load SLO profile: {exception}")
+        if not isinstance(parsed_slo_policy, dict):
+            parser.error("SLO profile must be a JSON object")
 
     evidence_paths = tuple(
         path.resolve()
@@ -293,11 +341,24 @@ def parse_options(argv: Optional[Sequence[str]] = None) -> BenchmarkOptions:
             parsed_messages = load_messages(
                 [{"role": "user", "content": args.prompt}]
             )
-        else:
+            workload_variants = (parsed_messages,)
+        elif args.messages_file is not None:
             assert args.messages_file is not None
             parsed_messages = load_messages(
                 json.loads(args.messages_file.read_text(encoding="utf-8"))
             )
+            workload_variants = (parsed_messages,)
+        else:
+            assert args.workloads_file is not None
+            raw_workloads = json.loads(
+                args.workloads_file.read_text(encoding="utf-8")
+            )
+            if not isinstance(raw_workloads, list) or not raw_workloads:
+                raise ValueError("workloads file must contain a non-empty array")
+            workload_variants = tuple(
+                load_messages(workload) for workload in raw_workloads
+            )
+            parsed_messages = workload_variants[0]
     except (OSError, UnicodeError, ValueError) as exception:
         parser.error(f"failed to load messages: {exception}")
 
@@ -333,6 +394,14 @@ def parse_options(argv: Optional[Sequence[str]] = None) -> BenchmarkOptions:
         worker_log_path=evidence_paths[2],
         gateway_log_path=evidence_paths[3],
         allow_dirty=args.allow_dirty,
+        admission_strategy=args.admission_strategy,
+        worker_max_active_requests=args.worker_max_active_requests,
+        worker_max_total_input_tokens=args.worker_max_total_input_tokens,
+        worker_max_reserved_output_tokens=(
+            args.worker_max_reserved_output_tokens
+        ),
+        slo_policy=parsed_slo_policy,
+        workload_variants=workload_variants,
     )
 
 
@@ -432,10 +501,16 @@ def execute(options: BenchmarkOptions) -> int:
             "--allow-dirty for a non-formal smoke run"
         )
     tokenizer = HuggingFaceTokenizer.load(options.tokenizer_path)
-    input_token_ids = tokenizer.encode_chat(options.messages)
-    if len(input_token_ids) > MAX_INPUT_TOKENS:
+    workload_variants = options.workload_variants or (options.messages,)
+    input_token_ids_by_workload = tuple(
+        tokenizer.encode_chat(messages) for messages in workload_variants
+    )
+    if any(len(tokens) > MAX_INPUT_TOKENS for tokens in input_token_ids_by_workload):
         raise ValueError("tokenized HTTP workload exceeds Engine max_input_tokens")
-    if len(input_token_ids) + options.max_new_tokens > MAX_SEQUENCE_TOKENS:
+    if any(
+        len(tokens) + options.max_new_tokens > MAX_SEQUENCE_TOKENS
+        for tokens in input_token_ids_by_workload
+    ):
         raise ValueError("HTTP workload exceeds Engine max_sequence_tokens")
     manifest = make_manifest(options, tokenizer)
 
@@ -457,7 +532,12 @@ def execute(options: BenchmarkOptions) -> int:
             options.engine_dir,
             socket_path,
             manifest,
-            make_limits(),
+            make_limits(
+                options.worker_max_active_requests,
+                options.worker_max_total_input_tokens,
+                options.worker_max_reserved_output_tokens,
+            ),
+            options.slo_policy,
         )
         write_gateway_config(gateway_config, worker_config, options, port)
         worker = ManagedWorker(
@@ -478,9 +558,16 @@ def execute(options: BenchmarkOptions) -> int:
             options.model,
             options.messages,
             options.max_new_tokens,
-            len(input_token_ids),
+            len(input_token_ids_by_workload[0]),
             options.request_timeout,
             options.slow_read_delay_ms,
+            tuple(
+                (messages, len(tokens))
+                for messages, tokens in zip(
+                    workload_variants,
+                    input_token_ids_by_workload,
+                )
+            ),
         )
         failure: Optional[BaseException] = None
         try:
@@ -542,7 +629,7 @@ def execute(options: BenchmarkOptions) -> int:
     write_request_csv(options.request_csv_path, measured.requests)
     summary = build_summary(
         options,
-        input_token_ids,
+        input_token_ids_by_workload,
         measured,
         worker_startup_ms,
         gateway_startup_ms,

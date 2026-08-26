@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <csignal>
@@ -17,6 +18,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <pthread.h>
 #include <stdexcept>
 #include <string>
@@ -36,6 +38,8 @@ using kimrt::llm::GenerationMailboxConfig;
 using kimrt::llm::GenerationRuntime;
 using kimrt::llm::GenerationRuntimeConfig;
 using kimrt::llm::RuntimeBridgeConfig;
+using kimrt::llm::SloAdmissionPolicyConfig;
+using kimrt::llm::SloProfileEntry;
 using kimrt::llm::TrtLlmBackendConfig;
 using kimrt::llm::TrtLlmExecutorBackend;
 using kimrt::llm::WorkerServer;
@@ -48,6 +52,7 @@ struct WorkerApplicationConfig {
     std::string socket_path;
     ModelManifest manifest;
     WorkerLimits limits;
+    std::optional<SloAdmissionPolicyConfig> slo_policy;
 };
 
 template <typename Value>
@@ -84,16 +89,34 @@ public:
                 exception.what());
         }
 
-        requireExactFields(
-            root,
-            {"engine_dir", "socket_path", "manifest", "limits"},
-            "worker configuration");
+        if (root.contains("slo_policy")) {
+            requireExactFields(
+                root,
+                {"engine_dir", "socket_path", "manifest", "limits",
+                 "slo_policy"},
+                "worker configuration");
+        } else {
+            requireExactFields(
+                root,
+                {"engine_dir", "socket_path", "manifest", "limits"},
+                "worker configuration");
+        }
 
         WorkerApplicationConfig config;
         config.engine_dir = requireString(root, "engine_dir");
         config.socket_path = requireString(root, "socket_path");
         config.manifest = parseManifest(root.at("manifest"));
         config.limits = parseLimits(root.at("limits"));
+        if (root.contains("slo_policy")) {
+            config.slo_policy = parseSloPolicy(root.at("slo_policy"));
+            if (config.slo_policy->model_id != config.manifest.model_id ||
+                config.slo_policy->revision != config.manifest.revision ||
+                config.slo_policy->engine_fingerprint !=
+                    config.manifest.engine_fingerprint) {
+                throw std::runtime_error(
+                    "slo_policy identity does not match the Worker manifest");
+            }
+        }
         if (config.engine_dir.empty() || config.socket_path.empty()) {
             throw std::runtime_error(
                 "engine_dir and socket_path must not be empty");
@@ -199,6 +222,23 @@ private:
         }
     }
 
+    static double requireNumber(
+        Json const& object,
+        char const* key,
+        bool allow_zero = false) {
+        auto const& value = object.at(key);
+        if (!value.is_number()) {
+            throw std::runtime_error(std::string{key} + " must be numeric");
+        }
+        auto const result = value.get<double>();
+        if (!std::isfinite(result) ||
+            (allow_zero ? result < 0.0 : result <= 0.0)) {
+            throw std::runtime_error(
+                std::string{key} + " is outside the supported range");
+        }
+        return result;
+    }
+
     static ModelManifest parseManifest(Json const& object) {
         requireExactFields(
             object,
@@ -268,6 +308,41 @@ private:
             object,
             "max_request_egress_bytes");
         return limits;
+    }
+
+    static SloAdmissionPolicyConfig parseSloPolicy(Json const& object) {
+        requireExactFields(
+            object,
+            {"model_id", "revision", "engine_fingerprint", "ttft_slo_ms",
+             "safety_margin_ms", "entries"},
+            "slo_policy");
+        auto const& entries = object.at("entries");
+        if (!entries.is_array() || entries.empty()) {
+            throw std::runtime_error("slo_policy.entries must be a non-empty array");
+        }
+
+        SloAdmissionPolicyConfig policy;
+        policy.model_id = requireString(object, "model_id");
+        policy.revision = requireString(object, "revision");
+        policy.engine_fingerprint =
+            requireString(object, "engine_fingerprint");
+        policy.ttft_slo_ms = requireNumber(object, "ttft_slo_ms");
+        policy.safety_margin_ms =
+            requireNumber(object, "safety_margin_ms", true);
+        policy.entries.reserve(entries.size());
+        for (auto const& entry : entries) {
+            requireExactFields(
+                entry,
+                {"max_input_tokens", "active_requests",
+                 "predicted_ttft_p95_ms"},
+                "slo_policy entry");
+            policy.entries.push_back(SloProfileEntry{
+                requireInteger<std::size_t>(entry, "max_input_tokens"),
+                requireInteger<std::size_t>(entry, "active_requests"),
+                requireNumber(entry, "predicted_ttft_p95_ms"),
+            });
+        }
+        return policy;
     }
 
     std::filesystem::path path_;
@@ -363,6 +438,7 @@ private:
             16,
             config_.manifest.max_output_tokens,
         };
+        config.slo_policy = config_.slo_policy;
         return config;
     }
 

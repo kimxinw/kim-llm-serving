@@ -5,15 +5,18 @@
 #include "runtime/generation_backend.h"
 #include "runtime/generation_mailbox.h"
 #include "runtime/generation_types.h"
+#include "runtime/slo_admission_policy.h"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 
 namespace kimrt::llm {
 struct GenerationRuntimeConfig {
     AdmissionConfig admission;
     GenerationMailboxConfig mailbox;
+    std::optional<SloAdmissionPolicyConfig> slo_policy;
 };
 
 struct GenerationSubmission {
@@ -65,6 +68,7 @@ private:
     std::unique_ptr<GenerationBackend> backend_;
     GenerationMailboxConfig mailboxConfig_;
     AdmissionController admission_;
+    std::optional<SloAdmissionPolicy> sloPolicy_;
 
     mutable std::shared_mutex lifecycleMutex_;
     State state_{State::Stopped};

@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -224,11 +224,15 @@ def make_manifest(engine_dir: Path) -> ModelManifest:
     )
 
 
-def make_limits() -> WorkerLimits:
+def make_limits(
+    max_active_requests: int = MAX_CONCURRENCY,
+    max_total_input_tokens: int = MAX_CONCURRENCY * MAX_INPUT_TOKENS,
+    max_reserved_output_tokens: int = MAX_CONCURRENCY * MAX_OUTPUT_TOKENS,
+) -> WorkerLimits:
     return WorkerLimits(
-        max_active_requests=MAX_CONCURRENCY,
-        max_total_input_tokens=MAX_CONCURRENCY * MAX_INPUT_TOKENS,
-        max_reserved_output_tokens=MAX_CONCURRENCY * MAX_OUTPUT_TOKENS,
+        max_active_requests=max_active_requests,
+        max_total_input_tokens=max_total_input_tokens,
+        max_reserved_output_tokens=max_reserved_output_tokens,
         max_frame_payload_bytes=1024 * 1024,
         max_session_egress_frames=1024,
         max_session_egress_bytes=16 * 1024 * 1024,
@@ -243,6 +247,7 @@ def write_worker_config(
     socket_path: Path,
     manifest: ModelManifest,
     limits: WorkerLimits,
+    slo_policy: Optional[Mapping[str, object]] = None,
 ) -> None:
     config = {
         "engine_dir": str(engine_dir),
@@ -250,6 +255,8 @@ def write_worker_config(
         "manifest": asdict(manifest),
         "limits": asdict(limits),
     }
+    if slo_policy is not None:
+        config["slo_policy"] = dict(slo_policy)
     path.write_text(
         json.dumps(config, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

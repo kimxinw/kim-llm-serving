@@ -18,6 +18,7 @@ STATUS_CODES = frozenset(
         "already_exists",
         "not_ready",
         "resource_exhausted",
+        "slo_predicted_miss",
         "unavailable",
         "queue_full",
         "engine_not_found",

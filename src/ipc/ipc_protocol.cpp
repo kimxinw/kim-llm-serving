@@ -1427,6 +1427,8 @@ std::string_view statusCodeName(StatusCode code) noexcept {
         return "not_ready";
     case StatusCode::ResourceExhausted:
         return "resource_exhausted";
+    case StatusCode::SloPredictedMiss:
+        return "slo_predicted_miss";
     case StatusCode::Unavailable:
         return "unavailable";
     case StatusCode::QueueFull:
@@ -1457,6 +1459,7 @@ std::optional<StatusCode> parseStatusCode(std::string_view name) noexcept {
              StatusCode::AlreadyExists,
              StatusCode::NotReady,
              StatusCode::ResourceExhausted,
+             StatusCode::SloPredictedMiss,
              StatusCode::Unavailable,
              StatusCode::QueueFull,
              StatusCode::EngineNotFound,

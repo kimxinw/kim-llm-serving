@@ -51,6 +51,7 @@ def gateway_error_from_status(status: Status) -> GatewayError:
         "already_exists": 409,
         "not_ready": 503,
         "resource_exhausted": 429,
+        "slo_predicted_miss": 429,
         "queue_full": 429,
         "unavailable": 503,
         "engine_not_found": 503,

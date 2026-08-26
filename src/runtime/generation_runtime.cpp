@@ -89,6 +89,13 @@ Status admissionFailure(AdmissionCode code) {
         "unknown Admission result");
 }
 
+Status sloPolicyFailure(double predicted_ttft_p95_ms) {
+    return failure(
+        StatusCode::SloPredictedMiss,
+        "SLO policy predicted TTFT P95 " +
+            std::to_string(predicted_ttft_p95_ms) + " ms");
+}
+
 bool hasOutstandingResources(
     AdmissionSnapshot const& snapshot) {
 
@@ -115,6 +122,10 @@ GenerationRuntime::GenerationRuntime(
         mailboxConfig_.max_queued_tokens == 0) {
         throw std::invalid_argument(
             "GenerationRuntime Mailbox capacity must be positive");
+    }
+
+    if (config.slo_policy.has_value()) {
+        sloPolicy_.emplace(std::move(*config.slo_policy));
     }
 }
 
@@ -192,6 +203,18 @@ GenerationSubmission GenerationRuntime::submit(
                 "GenerationRuntime is not running"),
             {},
         };
+    }
+
+    if (sloPolicy_.has_value()) {
+        auto const policy = sloPolicy_->evaluate(
+            request.input_token_ids.size(),
+            admission_.snapshot());
+        if (!policy.admitted) {
+            return {
+                sloPolicyFailure(policy.predicted_ttft_p95_ms),
+                {},
+            };
+        }
     }
 
     auto decision = admission_.tryAcquire({
