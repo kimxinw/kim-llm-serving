@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "benchmark": "open_loop_slow_sse_client_isolation",
+  "created_at_utc": "2026-08-26T01:48:56Z",
+  "git_commit": "e376f7897fd2cda1fdb9cf7631ed99d64c507036",
+  "git_dirty": false,
+  "interpretation": {
+    "question": "whether a deliberately slow SSE consumer materially degrades healthy-client latency or prevents terminal and resource convergence",
+    "control": "all HTTP/SSE clients consume content immediately",
+    "treatment": "every sixteenth measured request sleeps 62.5 ms after each non-empty SSE content event",
+    "primary_metrics": "paired slow-minus-control healthy-client TTFT and E2E percentiles",
+    "excluded_calibration": "closed-loop calibration was excluded because slow requests occupied load-generator threads and created synchronized bursts"
+  },
+  "workload": {
+    "engine_dir": "/home/xinwang/workspaces/trtllm016-spike/engines/tinyllama-1.1b-chat-fp16-tp1-bs8",
+    "tokenizer_path": "/home/xinwang/workspaces/trtllm016-spike/models/TinyLlama-1.1B-Chat-v1.0",
+    "model": "TinyLlama-1.1B-Chat-v1.0",
+    "revision": "trtllm-0.16.0-engine",
+    "mode": "open-loop",
+    "target_offered_rate_rps": 8.0,
+    "arrival_distribution": "constant",
+    "arrival_seed": 0,
+    "repetitions": 3,
+    "warmup_concurrency": 4,
+    "max_inflight": 32,
+    "warmup_requests": 5,
+    "measured_requests_per_variant_per_run": 120,
+    "input_tokens": 17,
+    "input_token_ids": [529, 29989, 1792, 29989, 29958, 13, 10994, 2, 29871, 13, 29966, 29989, 465, 22137, 29989, 29958, 13],
+    "max_new_tokens": 32,
+    "streaming": true,
+    "slow_request_every": 16,
+    "slow_read_delay_ms": 62.5,
+    "ttft_slo_ms": 50.0,
+    "e2e_slo_ms": 400.0,
+    "max_pending_requests": 8,
+    "max_client_delta_events_per_request": 33,
+    "max_sse_delta_events_per_request": 8,
+    "sampling": {
+      "temperature": 1.0,
+      "top_k": 1,
+      "top_p": 1.0,
+      "random_seed": 0
+    }
+  },
+  "minimum_repetitions_met": true,
+  "paired_execution_order_rotated": true,
+  "execution_orders": [["control", "slow"], ["slow", "control"], ["control", "slow"]],
+  "runs": [
+    {
+      "repetition": 1,
+      "control_summary": "run-01/control-summary.json",
+      "slow_summary": "run-01/slow-summary.json",
+      "control": {"healthy_ttft_ms_p50": 17.545158, "healthy_ttft_ms_p95": 21.271124, "healthy_e2e_ms_p50": 270.839243, "healthy_e2e_ms_p95": 275.731654},
+      "slow_treatment": {"healthy_ttft_ms_p50": 17.25926, "healthy_ttft_ms_p95": 21.335567, "healthy_e2e_ms_p50": 275.152866, "healthy_e2e_ms_p95": 287.380751, "slow_client_requests": 7, "slow_client_e2e_ms_p50": 2023.249401, "slow_client_e2e_ms_p95": 2026.432559}
+    },
+    {
+      "repetition": 2,
+      "control_summary": "run-02/control-summary.json",
+      "slow_summary": "run-02/slow-summary.json",
+      "control": {"healthy_ttft_ms_p50": 17.082309, "healthy_ttft_ms_p95": 21.219279, "healthy_e2e_ms_p50": 269.521816, "healthy_e2e_ms_p95": 285.33125},
+      "slow_treatment": {"healthy_ttft_ms_p50": 18.038344, "healthy_ttft_ms_p95": 22.556137, "healthy_e2e_ms_p50": 274.829668, "healthy_e2e_ms_p95": 285.125316, "slow_client_requests": 7, "slow_client_e2e_ms_p50": 2022.195087, "slow_client_e2e_ms_p95": 2028.525656}
+    },
+    {
+      "repetition": 3,
+      "control_summary": "run-03/control-summary.json",
+      "slow_summary": "run-03/slow-summary.json",
+      "control": {"healthy_ttft_ms_p50": 17.612503, "healthy_ttft_ms_p95": 21.813794, "healthy_e2e_ms_p50": 271.103961, "healthy_e2e_ms_p95": 290.686834},
+      "slow_treatment": {"healthy_ttft_ms_p50": 17.107203, "healthy_ttft_ms_p95": 22.127303, "healthy_e2e_ms_p50": 260.71453, "healthy_e2e_ms_p95": 290.656251, "slow_client_requests": 7, "slow_client_e2e_ms_p50": 2023.383718, "slow_client_e2e_ms_p95": 2026.864461}
+    }
+  ],
+  "paired_aggregate": {
+    "healthy_client_ttft_ms": {
+      "p50": {"control_mean": 17.413323333333334, "slow_mean": 17.468269, "slow_minus_control_mean": 0.05494566666666619, "slow_minus_control_sample_stdev": 0.7880392118329735, "relative_mean_percent": 0.36605180146713767},
+      "p95": {"control_mean": 21.434732333333333, "slow_mean": 22.00633566666667, "slow_minus_control_mean": 0.5716033333333334, "slow_minus_control_sample_stdev": 0.6743289232491312, "relative_mean_percent": 2.680123312055701},
+      "p99": {"control_mean": 21.920695666666667, "slow_mean": 22.700115666666665, "slow_minus_control_mean": 0.7794199999999994, "slow_minus_control_sample_stdev": 1.10444740201786, "relative_mean_percent": 3.598002593162253}
+    },
+    "healthy_client_e2e_ms": {
+      "p50": {"control_mean": 270.48834, "slow_mean": 270.2323546666667, "slow_minus_control_mean": -0.25598533333332324, "slow_minus_control_sample_stdev": 8.789889853438126, "relative_mean_percent": -0.09007390282414669},
+      "p95": {"control_mean": 283.91657933333335, "slow_mean": 287.7207726666667, "slow_minus_control_mean": 3.8041933333333304, "slow_minus_control_sample_stdev": 6.794451570786282, "relative_mean_percent": 1.3807001167073711},
+      "p99": {"control_mean": 286.46669633333335, "slow_mean": 289.864918, "slow_minus_control_mean": 3.398221666666681, "slow_minus_control_sample_stdev": 7.63533833954673, "relative_mean_percent": 1.2391658779863812}
+    },
+    "slow_client_e2e_ms": {"p50_mean": 2022.9427353333333, "p50_sample_stdev": 0.6509560560239994, "p95_mean": 2027.2742253333333, "p95_sample_stdev": 1.1050764088995568}
+  },
+  "aggregate_counts": {
+    "control_offered": 360,
+    "control_completed": 360,
+    "control_failed": 0,
+    "slow_treatment_offered": 360,
+    "slow_treatment_completed": 360,
+    "slow_treatment_failed": 0,
+    "slow_client_requests": 21,
+    "healthy_client_requests_in_slow_treatment": 339,
+    "healthy_client_requests_meeting_both_slos": 339
+  },
+  "invariants": {
+    "all_requests_completed": true,
+    "all_healthy_clients_met_both_slos": true,
+    "all_resources_released": true,
+    "all_outputs_identical": true,
+    "unique_output_text_sha256": ["49319d8295cf05880c9ae97ca74bc2bc1e5ba387edec57a1c43b1f53e86b2455"],
+    "rejected_requests": 0,
+    "terminal_error_requests": 0,
+    "client_failure_requests": 0,
+    "http_disconnect_cancels": 0,
+    "sse_backpressure_cancels": 0,
+    "terminal_drain_timeouts": 0,
+    "worker_backpressure_requests": 0,
+    "worker_cancelled_requests": 0
+  },
+  "resource_watermarks": {
+    "gateway_active_requests_max": 4,
+    "gateway_sse_buffer_events_max": 4,
+    "gateway_sse_buffer_capacity_per_request": 8,
+    "worker_session_egress_frames_max": 6
+  },
+  "conclusion": "At 8 RPS with ISL17/OSL32, approximately one two-second slow SSE consumer at a time increased healthy TTFT P95 by 0.572 ms and healthy E2E P95 by 3.804 ms on paired means; 339/339 healthy treatment requests met both SLOs and every request, terminal, and tracked resource converged.",
+  "scope_limit": "This validates non-saturating slow-consumer isolation for this model, engine, hardware, and workload. It does not prove queue-full cancellation behavior or overload-policy goodput gains."
+}
