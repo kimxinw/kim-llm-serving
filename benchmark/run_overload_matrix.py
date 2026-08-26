@@ -224,7 +224,9 @@ class OverloadMatrixRunner:
             "--worker-max-total-input-tokens", str(strategy.max_total_input_tokens),
             "--worker-max-reserved-output-tokens",
             str(strategy.max_reserved_output_tokens),
-            "--concurrency", str(min(4, strategy.max_active_requests)),
+            # Warmup must validate the path without exercising the strategy;
+            # the open-loop measurement below supplies the actual overload.
+            "--concurrency", "1",
             "--max-inflight", str(self._options.max_inflight),
             "--max-pending-requests", str(self._options.max_pending_requests),
             "--warmup-requests", str(self._options.warmup_requests),
