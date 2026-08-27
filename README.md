@@ -1,0 +1,299 @@
+# kim-llm-serving
+
+基于 C++17 与 TensorRT-LLM Executor API 的大模型推理服务后端。项目当前聚焦请求生命周期、流式事件交付、取消、超时、背压和可验证性；连续批处理与 KV Cache 等模型执行能力由 TensorRT-LLM 提供。
+
+## 当前能力
+
+| 领域 | 状态 |
+|---|---|
+| TensorRT-LLM C++ Executor 接入 | 已完成 |
+| Token ID 离线推理 | 已完成 |
+| `GenerationBackend` 抽象 | 已完成 |
+| 有界 `GenerationMailbox` | 已完成 |
+| 流式 `TokenDelta` 与唯一 `TerminalEvent` | 已完成 |
+| 取消、Deadline 与停止收敛 | 已完成基础链路 |
+| CPU / 无 GPU 契约测试 | `16/16 PASS`（2026-08-27） |
+| Direct Backend 真实 Engine 生命周期测试 | 已完成基线 |
+| IPC v1 codec 与真实 UDS Session | 已完成 A6-2（`b625df0`） |
+| Runtime Bridge 与终态感知公平 Egress | 已完成 A6-3（`050a263`） |
+| 单活 WorkerServer、独立 `llm_worker` 与 Python `GenerationClient` | 已完成基础版（`1676515`） |
+| Python → UDS → Worker → TinyLlama Engine | A6-4 已完成：流式/非流式 Token IDs 与 Direct 路径一致，Worker 断连后未完成请求收敛为 `Unavailable`（`2589c4e`） |
+| Admission、全局输出预算、Direct Benchmark | 已完成基础版 |
+| 固定 workload 的 Direct / IPC 增量开销 | A6-5 已完成（`3334046`） |
+| CPU-only configure/build/test | 已完成模块边界 |
+| Tokenizer、OpenAI API、SSE | 最小 Gateway 已完成（`0581c0a`） |
+| HTTP/SSE Benchmark Harness | closed/open-loop、有界 `max_inflight`、SLO goodput、拒绝分类、慢客户端分组与证据门禁已完成（`c37cc81`）；Gateway 正常停止误判已修复（`c3f24ab`） |
+| 慢客户端隔离 | 8 RPS open-loop、ISL17/OSL32 三轮正式配对已完成；健康请求 339/339 满足 TTFT/E2E SLO，全部请求与资源收敛（`2b08de1`） |
+| 可观测性与正式性能矩阵 | Gateway/SSE/Worker egress 高水位及 Admission 快照已接入；16/24/32 RPS 三策略正式过载矩阵已完成，结果显示当前 Profile-guided 策略过于保守 |
+
+## 架构边界
+
+```text
+OpenAI Client
+  -> FastAPI Gateway / Hugging Face Tokenizer
+  -> Python GenerationClient
+  -> UDS
+  -> WorkerServer / IpcSession
+  -> IPC Message
+  -> RuntimeBridge / SessionEgress
+  -> GenerationRuntime
+      -> AdmissionController
+      -> RequestState + GenerationMailbox
+      -> GenerationBackend / TrtLlmExecutorBackend
+          -> TensorRT-LLM Executor
+              -> GPU
+```
+
+本项目实现 TensorRT-LLM 之上的 Serving Runtime，不宣称重新实现 Attention Kernel、Paged KV Cache 或连续批处理引擎。
+
+## 目录
+
+```text
+include/common/           通用状态与请求上下文
+include/runtime/          生成类型、Backend 契约、生命周期与资源控制
+include/ipc/              IPC v1 协议、UDS Transport 与 Session
+include/worker/           Runtime Bridge 与公平 Egress
+include/backends/trtllm/  TensorRT-LLM Backend 公共接口
+src/                      与 include 镜像的 runtime/ipc/worker/backends 实现
+tests/                    与生产模块镜像的 CPU 契约及 GPU 门禁测试
+apps/                     `llm_worker`、离线推理等可执行程序入口
+clients/python/           Python GenerationClient 与 IPC 协议实现
+gateway/python/           OpenAI-compatible HTTP/SSE Gateway、Tokenizer 与运行时适配
+benchmark/                Direct、IPC 与 HTTP/SSE Benchmark
+docs/                     Pipeline、开发计划与历史任务
+```
+
+## 构建
+
+CPU 契约不需要 CUDA、TensorRT、TensorRT-LLM、MPI 或 Conda 环境：
+
+```bash
+cmake -S . -B build-cpu \
+  -DKIM_LLM_ENABLE_TRTLLM=OFF
+cmake --build build-cpu --parallel
+ctest --test-dir build-cpu --output-on-failure
+```
+
+GPU 路径的验证基线使用 TensorRT-LLM `0.16.0`、TensorRT `10.7.0.23`、C++17 与 `_GLIBCXX_USE_CXX11_ABI=0`。构建前需要激活对应 Conda 环境，并显式提供依赖路径：
+
+```bash
+cmake -S . -B build-llm \
+  -DKIM_LLM_ENABLE_TRTLLM=ON \
+  -DTRTLLM_SOURCE_DIR=/path/to/TensorRT-LLM \
+  -DTRTLLM_LIB_DIR=/path/to/tensorrt_llm/libs \
+  -DTENSORRT_ROOT=/path/to/TensorRT-10.7.0.23 \
+  -DKIMRT_LLM_TEST_ENGINE_DIR=/path/to/engine
+
+cmake --build build-llm --parallel
+ctest --test-dir build-llm --output-on-failure
+ctest --test-dir build-llm -L gpu --output-on-failure -V
+```
+
+`KIMRT_LLM_TEST_ENGINE_DIR` 为空时，只注册无 GPU 测试；非空时额外注册 Direct Backend 与 Python/Worker 跨进程真实 Engine 测试。GPU 测试统一标记为 `gpu;integration`，并通过资源锁避免并行争抢 GPU 0。
+
+## 最小 Gateway
+
+提交 `0581c0a` 完成固定单模型 Gateway：启动时严格校验 Tokenizer、Chat Template、
+特殊 Token 与 Worker `ModelManifest`，提供 `/v1/chat/completions` 非流式及 SSE、
+`/healthz`、`/readyz`、`/metrics` 和 `/v1/models`。每请求 SSE 队列和 Gateway
+待处理请求数均有硬上限；HTTP 断连或慢消费者溢出会触发幂等 Cancel，并在后台继续
+排空该请求直到唯一 Terminal，避免提前释放 Worker 生命周期。
+
+```bash
+PYTHONPATH=clients/python:gateway/python \
+  python -m kim_llm_gateway inspect-tokenizer \
+  --tokenizer-path /path/to/tokenizer
+
+PYTHONPATH=clients/python:gateway/python \
+  python -m kim_llm_gateway serve \
+  --config configs/gateway.example.json
+```
+
+2026-08-24 真实 TinyLlama 链路已验证非流式和 SSE 输出一致；非流式响应的
+`prompt_tokens/completion_tokens` 为 `17/8`，HTTP 流式客户端主动断连后
+`http_disconnect_cancels_total=1`、活动请求回到 `0`，Worker 与 Gateway 均可优雅停止。
+
+## HTTP/SSE Benchmark Harness
+
+提交 `c37cc81` 新增隔离运行的 HTTP/SSE Benchmark：每轮自动启动并停止独立
+Worker/Gateway，使用固定 Chat Template 记录实际输入 Token IDs，支持有界
+closed-loop/open-loop、固定或 Poisson 到达、TTFT/E2E SLO goodput、拒绝原因、
+慢客户端分组以及 Gateway/Worker 资源归零检查。`max_inflight` 是客户端硬边界，
+容量耗尽记录为 `client_overflow`，不会形成无界任务队列。
+
+Gateway `/metrics` 同步补充 active/SSE buffer 高水位、Worker Admission 当前值和
+Session egress 当前值/高水位；metrics 抓取不会为不可用 Worker 隐式重连。正式运行
+默认要求 Git 无已跟踪改动且证据路径不存在，避免把开发态或被覆盖的结果当作结论。
+
+截至 2026-08-27，Harness 代码和 CPU 契约已经完成，当前无 GPU 回归
+`16/16 PASS`。提交 `c3f24ab` 修复 Harness 主动发送 `SIGTERM` 后将 Gateway
+预期返回码 `-15` 误判为失败的问题，并补充主动停止与意外退出的区分测试。修复后的
+真实 Engine C1 开发冒烟已稳定生成 summary、CSV 和 Worker/Gateway 日志，5 个测量
+请求全部成功且 `resources_released=true`。该轮用于修复验证；随后由三路径总控在干净
+提交上完成正式 fixed-workload 分层基线。慢客户端隔离和正式 open-loop
+过载矩阵均已完成；过载矩阵没有证明当前 Profile-guided 策略具有 goodput
+收益，因此只报告负结果和适用边界。
+
+## 慢客户端隔离正式实验
+
+2026-08-26 在干净提交 `e376f78` 上完成 3 轮 control/slow 交替配对。正式实验采用
+8 RPS constant-arrival open-loop、ISL17/OSL32、每组每轮120个请求和
+`max_inflight=32`；slow 组每16个请求设置1个慢消费者，并在每个非空 SSE 内容块后
+暂停 `62.5 ms`。该配置使慢请求 E2E P50 达到 `2022.943 ms`，同时避免 closed-loop
+负载发生器线程被慢请求占用后形成同步突发。
+
+| 健康客户端指标 | Slow − Control 配对均值 | 相对变化 |
+|---|---:|---:|
+| TTFT P50 | `+0.055 ms` | `+0.37%` |
+| TTFT P95 | `+0.572 ms` | `+2.68%` |
+| TTFT P99 | `+0.779 ms` | `+3.60%` |
+| E2E P50 | `-0.256 ms` | `-0.09%` |
+| E2E P95 | `+3.804 ms` | `+1.38%` |
+| E2E P99 | `+3.398 ms` | `+1.24%` |
+
+Control 与 slow 各完成 `360/360` 个请求，slow 组中的健康请求 `339/339` 同时满足
+TTFT `50 ms` 与 E2E `400 ms` SLO；Rejected、Terminal Error、Client Failure、
+Backpressure Cancel 和 Terminal Drain Timeout 均为0，六组实验结束后资源全部归零。
+SSE buffer 高水位为 `4/8`，Worker Session Egress 高水位为6帧，所有输出文本哈希一致。
+
+机器可读聚合结果和每轮原始 summary 位于
+[`benchmark/evidence/slow-client-isolation-open-rate8-isl17-osl32-r3`](benchmark/evidence/slow-client-isolation-open-rate8-isl17-osl32-r3)。
+结论只覆盖当前非饱和慢消费者隔离，不代表队列满取消路径或正式过载策略收益已经验证。
+
+## 三策略 open-loop 过载矩阵
+
+2026-08-26 在干净提交 `969897b` 上完成 Fixed Concurrency、2D Token Budget
+和 Profile-guided SLO 三策略对照。实验使用 TinyLlama 1.1B FP16 BS8
+Engine、ISL32/128 各半的混合 workload、OSL32、16/24/32 RPS Poisson 到达；
+每个数据点独立运行 3 轮，每轮 240 个测量请求，并轮换策略执行顺序。
+
+| Offered rate | Fixed goodput | Token Budget goodput | Profile-guided goodput | 结论 |
+|---:|---:|---:|---:|---|
+| 16 RPS | `13.644/s` | `10.027/s` | `5.760/s` | Fixed 最高 |
+| 24 RPS | `12.072/s` | `12.425/s` | `6.355/s` | Token 与 Fixed 基本相当 |
+| 32 RPS | `12.129/s` | `13.638/s` | `6.404/s` | Token 均值更高，但配对差异方差较大 |
+
+Fixed 在 24/32 RPS 的 E2E P95 为 `425.444/426.366 ms`，已超过
+400 ms SLO；Token Budget 的 E2E P95 为 `304.864/314.173 ms`，且三个负载点
+平均 Accepted 后 SLO miss 分别为 `0/0.333/0`。这说明 Token Budget 能避免一部分
+无效 GPU 工作，但当前 3 轮样本还不支持宣称稳定 goodput 提升。
+
+Profile-guided 的 Accepted 请求全部满足 SLO，但相对 Token Budget 的 goodput
+分别降低 `4.266/6.070/7.234 RPS`。原因是当前离线画像按 1/2/4/8 active
+bucket 取更保守的邻近项，且固定 `3 ms` safety margin；正式运行中画像相对
+实际 TTFT P95 平均高估约 `16.2 ms`，造成大量 `slo_predicted_miss` 早拒绝。
+该结果按原始参数保留，不通过事后调参隐藏负结果。
+
+27 组运行共发出 `6480` 个请求，所有 Accepted 请求均与 Completed
+数量一致，Terminal Error、Client Failure、Backpressure Cancel 和 Terminal Drain
+Timeout 均为 0，每轮结束后可观测的 Admission、Gateway buffer 和 Session
+egress 资源均归零。机器可读聚合报告和 27 份原始 summary 位于
+[`benchmark/evidence/overload-matrix-mixed-isl32-128-rate16-24-32-r3`](benchmark/evidence/overload-matrix-mixed-isl32-128-rate16-24-32-r3)。
+
+## Direct / IPC / HTTP 分层基线
+
+`benchmark/run_direct_ipc_http_benchmark.py` 使用同一 Chat Template 和 Tokenizer
+生成固定输入 Token IDs，并按三阶轮换顺序执行 Direct、IPC 和 HTTP/SSE。每轮要求
+Direct/IPC 输出 Token IDs 完全一致，同时要求 HTTP 文本逐请求等于相同 Token IDs
+经固定 Tokenizer 解码后的结果，且 completion token 数、成功请求数和资源归零状态
+全部一致。最终报告给出 TTFT、TPOT、E2E、请求吞吐和输出 Token 吞吐的三路径均值、
+样本标准差以及 `IPC - Direct`、`HTTP - IPC` 配对增量。
+
+设计参考 NVIDIA TensorRT-LLM Triton Backend 的
+[`benchmark_core_model.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/main/triton_backend/tools/inflight_batcher_llm/benchmark_core_model.py)：
+采用“核心推理路径与端到端服务路径分层测量”和机器可读 workload 元数据；本项目调整为
+三路径轮换配对实验，并增加输出等价性、协议正确性和资源释放门禁，不采用 Triton/gRPC
+传输及其请求 schema。
+
+```bash
+python3 benchmark/run_direct_ipc_http_benchmark.py \
+  --direct-benchmark build-llm/llm_direct_benchmark \
+  --worker build-llm/llm_worker \
+  --engine-dir /path/to/tinyllama-engine \
+  --tokenizer-path /path/to/TinyLlama-1.1B-Chat-v1.0 \
+  --output-dir benchmark/results/direct-ipc-http-c1 \
+  --repetitions 3 \
+  --concurrency 1 \
+  --warmup-requests 5 \
+  --measured-requests 200 \
+  --max-new-tokens 32 \
+  --prompt Hello
+```
+
+正式运行要求 Git 无已跟踪改动、结果目录不存在且至少完成三次重复；只有完整三轮
+轮换才能标记 `minimum_repetitions_met=true` 和
+`balanced_execution_order_cycle=true`。单轮 `--allow-dirty` 仅用于开发冒烟。
+新增三路径比较契约后，当前无 GPU 回归为 `15/15 PASS`。
+
+提交 `3f831fa` 上已完成 C1/ISL17/OSL32 正式实验：三条路径按
+`Direct→IPC→HTTP`、`IPC→HTTP→Direct`、`HTTP→Direct→IPC` 轮换，每路径每轮
+200 个测量请求，共 3 次重复。600 组 Direct/IPC Token IDs 完全一致，HTTP 文本与
+对应 Token IDs 的固定 Tokenizer 解码逐请求一致；所有请求成功，无 Rejected、
+Terminal Error 或 Client Failure，HTTP 每轮结束后资源均回到 0。
+
+| 指标 | Direct 均值 | IPC 均值 | HTTP 均值 | IPC − Direct | HTTP − IPC |
+|---|---:|---:|---:|---:|---:|
+| TTFT P50 | `10.676 ms` | `11.473 ms` | `13.388 ms` | `+0.797 ms`（`+7.48%`） | `+1.915 ms`（`+16.70%`） |
+| TPOT P50 | `8.270 ms` | `8.332 ms` | `8.352 ms` | `+0.061 ms`（`+0.74%`） | `+0.020 ms`（`+0.24%`） |
+| E2E P50 | `267.131 ms` | `269.817 ms` | `272.735 ms` | `+2.686 ms`（`+1.01%`） | `+2.918 ms`（`+1.08%`） |
+| request throughput | `3.740/s` | `3.704/s` | `3.664/s` | `-0.97%` | `-1.07%` |
+| output token throughput | `119.671/s` | `118.514/s` | `117.244/s` | `-0.97%` | `-1.07%` |
+
+机器可读的聚合结果及每轮 Direct/IPC/HTTP summary 保存在
+[`benchmark/evidence/direct-ipc-http-c1-isl17-osl32-r3`](benchmark/evidence/direct-ipc-http-c1-isl17-osl32-r3)。
+这里的 HTTP TTFT 从客户端请求开始计时，E2E 直到 SSE `[DONE]`，因此 HTTP 增量表示
+完整服务层成本，不是 HTTP 或 UDS 系统调用微基准；结论仅适用于固定模型、Engine、
+RTX 3060 和上述 workload。
+
+## Direct / IPC 增量开销
+
+`llm_direct_benchmark` 与 `benchmark/llm_ipc_benchmark.py` 使用相同的
+closed-loop workload、采样参数和请求计时边界。总控脚本默认交错执行 3 轮
+Direct/IPC 配对实验，逐请求校验输出 Token IDs 完全一致，并报告 TTFT、
+TPOT、E2E、request throughput 和 output token throughput 的 IPC 增量及样本标准差。
+这里的增量包含 Python `GenerationClient`、JSON 编解码、UDS、`WorkerServer`、
+`GenerationRuntime` 与 Bridge/Egress，而不是只测 UDS 系统调用的微基准。
+
+```bash
+python3 benchmark/run_direct_ipc_benchmark.py \
+  --direct-benchmark build-llm/llm_direct_benchmark \
+  --worker build-llm/llm_worker \
+  --engine-dir /path/to/tinyllama-engine \
+  --output-dir benchmark/results/direct-ipc-c1 \
+  --repetitions 3 \
+  --concurrency 1 \
+  --warmup-requests 5 \
+  --measured-requests 50 \
+  --max-new-tokens 32 \
+  --input-token-ids 1 2 3 4
+```
+
+正式证据默认要求 Git 工作区无已跟踪改动，结果目录也必须不存在，避免覆盖旧实验。
+脚本在相邻轮次交换 Direct/IPC 执行顺序以降低温度和时间漂移影响；最终报告为
+`<output-dir>/direct-ipc-comparison.json`，每轮原始 summary、逐请求 CSV、
+Direct iteration stats、Worker 日志和命令日志均保留在对应 `run-XX/` 目录。
+开发期单轮冒烟可使用 `--repetitions 1 --allow-dirty`，但不得作为正式性能结论。
+
+截至提交 `3334046`，A6-5 已使用 C1/ISL4/OSL32 固定 workload 完成
+3 轮交错配对实验，每条路径每轮测量 200 个请求。Direct 与 IPC 的逐请求
+Token IDs 完全一致，失败、Rejected、Backpressure 和 Cancel 均为 0，资源最终归零。
+
+| 指标 | IPC 相对 Direct 的配对均值 |
+|---|---:|
+| TTFT P50 | `+0.661 ms`（`+8.13%`） |
+| TPOT P50 | `+0.025 ms`（`+0.33%`） |
+| E2E P50 | `+1.482 ms`（`+0.61%`） |
+| request throughput | `-0.66%` |
+| output token throughput | `-0.66%` |
+
+结果说明当前进程与协议隔离成本主要体现为亚毫秒级首 Token 固定开销，
+稳态 Decode 基本不变；该结论只适用于上述固定模型、Engine、硬件和 workload，
+不替代后续 HTTP 路径及过载策略对照。
+
+## 路线图
+
+下一阶段进入求职交付冻结：完成 CPU CI、build/test/serve/benchmark 一键入口，
+并核对架构、状态机、故障传播和性能结论文档。当前 Profile-guided 负结果作为边界
+分析保留，不继续增加功能或进行事后调参。
+当前请求链路和故障传播说明见
+[`docs/Inference_Pipeline.md`](docs/Inference_Pipeline.md)。
