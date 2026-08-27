@@ -15,6 +15,7 @@ namespace kimrt {
         NotReady,
         //这里不把容量不足继续映射为 InvalidInput，否则 HTTP/IPC 层无法判断请求应重试还是修改参数。
         ResourceExhausted,
+        SloPredictedMiss,
         Unavailable,
 
         QueueFull,

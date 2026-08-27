@@ -61,6 +61,12 @@ class BenchmarkOptions:
     worker_log_path: Path
     gateway_log_path: Path
     allow_dirty: bool
+    admission_strategy: str = "fixed-concurrency"
+    worker_max_active_requests: int = 8
+    worker_max_total_input_tokens: int = 4096
+    worker_max_reserved_output_tokens: int = 256
+    slo_policy: Optional[Mapping[str, object]] = None
+    workload_variants: tuple[tuple[Mapping[str, str], ...], ...] = ()
 
 
 @dataclass
@@ -72,6 +78,8 @@ class RequestResult:
     slow_client: bool = False
     http_status: int = 0
     status_code: str = ""
+    workload_index: int = 0
+    input_tokens: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     output_text: str = ""
@@ -104,6 +112,9 @@ class OpenAiSseClient:
         expected_prompt_tokens: int,
         request_timeout: float,
         slow_read_delay_ms: float,
+        workload_variants: Optional[
+            Sequence[tuple[Sequence[Mapping[str, str]], int]]
+        ] = None,
     ) -> None:
         parsed = urlsplit(base_url)
         if parsed.scheme != "http" or not parsed.hostname:
@@ -113,23 +124,31 @@ class OpenAiSseClient:
         prefix = parsed.path.rstrip("/")
         self._path = f"{prefix}/v1/chat/completions"
         self._request_timeout = request_timeout
-        self._expected_prompt_tokens = expected_prompt_tokens
         self._slow_read_delay_seconds = slow_read_delay_ms / 1000.0
-        self._body = json.dumps(
-            {
-                "model": model,
-                "messages": list(messages),
-                "stream": True,
-                "stream_options": {"include_usage": True},
-                "max_tokens": max_new_tokens,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "seed": 0,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
+        variants = workload_variants or ((messages, expected_prompt_tokens),)
+        self._variants = tuple(
+            (
+                json.dumps(
+                    {
+                        "model": model,
+                        "messages": list(variant_messages),
+                        "stream": True,
+                        "stream_options": {"include_usage": True},
+                        "max_tokens": max_new_tokens,
+                        "temperature": 1.0,
+                        "top_p": 1.0,
+                        "seed": 0,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8"),
+                variant_tokens,
+            )
+            for variant_messages, variant_tokens in variants
+        )
+        if not self._variants:
+            raise ValueError("HTTP benchmark requires at least one workload")
 
     def run(
         self,
@@ -137,7 +156,14 @@ class OpenAiSseClient:
         scheduled_ns: int,
         slow_client: bool,
     ) -> RequestResult:
-        result = RequestResult(request_id=request_id, slow_client=slow_client)
+        workload_index = (request_id - 1) % len(self._variants)
+        body, expected_prompt_tokens = self._variants[workload_index]
+        result = RequestResult(
+            request_id=request_id,
+            slow_client=slow_client,
+            workload_index=workload_index,
+            input_tokens=expected_prompt_tokens,
+        )
         begin_ns = time.perf_counter_ns()
         result.scheduling_lag_ms = max(
             0.0,
@@ -161,7 +187,7 @@ class OpenAiSseClient:
             connection.request(
                 "POST",
                 self._path,
-                body=self._body,
+                body=body,
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "text/event-stream",
@@ -260,7 +286,7 @@ class OpenAiSseClient:
             else:
                 if not usage_observed:
                     raise RuntimeError("successful SSE stream did not report usage")
-                if result.prompt_tokens != self._expected_prompt_tokens:
+                if result.prompt_tokens != expected_prompt_tokens:
                     raise RuntimeError(
                         "HTTP usage prompt_tokens differs from the tokenized workload"
                     )
@@ -577,7 +603,7 @@ def write_request_csv(path: Path, requests: Sequence[RequestResult]) -> None:
 
 def build_summary(
     options: BenchmarkOptions,
-    input_token_ids: Sequence[int],
+    input_token_ids: Sequence[int] | Sequence[Sequence[int]],
     run: RunResult,
     worker_startup_ms: float,
     gateway_startup_ms: float,
@@ -585,6 +611,12 @@ def build_summary(
     metrics_after: Mapping[str, float],
 ) -> dict[str, object]:
     requests = run.requests
+    if input_token_ids and isinstance(input_token_ids[0], int):
+        tokenized_workloads = (tuple(input_token_ids),)  # type: ignore[arg-type]
+    else:
+        tokenized_workloads = tuple(
+            tuple(variant) for variant in input_token_ids  # type: ignore[union-attr]
+        )
     completed = [request for request in requests if request.outcome == "completed"]
     healthy = [request for request in completed if not request.slow_client]
     slow = [request for request in completed if request.slow_client]
@@ -618,6 +650,47 @@ def build_summary(
     ).encode("utf-8")
     completion_tokens = sum(request.completion_tokens for request in completed)
     duration = run.duration_seconds
+    workload_results = []
+    for index, tokens in enumerate(tokenized_workloads):
+        workload_requests = [
+            request for request in requests if request.workload_index == index
+        ]
+        workload_completed = [
+            request
+            for request in workload_requests
+            if request.outcome == "completed"
+        ]
+        workload_results.append(
+            {
+                "workload_index": index,
+                "input_tokens": len(tokens),
+                "offered_requests": len(workload_requests),
+                "accepted_requests": sum(
+                    request.accepted for request in workload_requests
+                ),
+                "completed_requests": len(workload_completed),
+                "rejected_requests": sum(
+                    request.outcome == "rejected"
+                    for request in workload_requests
+                ),
+                "good_requests": sum(
+                    request_meets_slo(
+                        request,
+                        options.ttft_slo_ms,
+                        options.e2e_slo_ms,
+                    )
+                    for request in workload_requests
+                ),
+                "ttft_ms": result_distribution(
+                    workload_completed,
+                    "ttft_ms",
+                ),
+                "e2e_ms": result_distribution(
+                    workload_completed,
+                    "e2e_ms",
+                ),
+            }
+        )
     return {
         "schema_version": 1,
         "benchmark_path": "http_sse",
@@ -630,8 +703,20 @@ def build_summary(
         "max_inflight": options.max_inflight,
         "warmup_requests": options.warmup_requests,
         "measured_requests": options.measured_requests,
-        "input_tokens": len(input_token_ids),
-        "input_token_ids": list(input_token_ids),
+        "input_tokens": len(tokenized_workloads[0]),
+        "input_token_ids": list(tokenized_workloads[0]),
+        "workloads": [
+            {
+                "workload_index": index,
+                "input_tokens": len(tokens),
+                "input_token_ids": list(tokens),
+                "offered_requests": sum(
+                    request.workload_index == index for request in requests
+                ),
+            }
+            for index, tokens in enumerate(tokenized_workloads)
+        ],
+        "workload_results": workload_results,
         "max_new_tokens": options.max_new_tokens,
         "streaming": True,
         "sampling": {
@@ -639,6 +724,15 @@ def build_summary(
             "top_k": 1,
             "top_p": 1.0,
             "random_seed": 0,
+        },
+        "admission": {
+            "strategy": options.admission_strategy,
+            "max_active_requests": options.worker_max_active_requests,
+            "max_total_input_tokens": options.worker_max_total_input_tokens,
+            "max_reserved_output_tokens": (
+                options.worker_max_reserved_output_tokens
+            ),
+            "slo_policy": options.slo_policy,
         },
         "metric_boundaries": {
             "ttft": "client request start to first non-empty SSE content",

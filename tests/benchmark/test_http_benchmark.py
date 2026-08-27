@@ -220,6 +220,37 @@ class HttpBenchmarkContractTest(unittest.TestCase):
         self.assertTrue(result.protocol_valid)
         self.assertFalse(result.accepted)
 
+    def test_sse_client_rotates_mixed_workloads(self) -> None:
+        events = (
+            b'data: {"choices":[{"delta":{"content":"a"},"finish_reason":null}]}\n\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+            b'data: {"choices":[],"usage":{"prompt_tokens":8,'
+            b'"completion_tokens":1,"total_tokens":9}}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        connection = FakeConnection(FakeResponse(200, events))
+        short = ({"role": "user", "content": "short"},)
+        long = ({"role": "user", "content": "long"},)
+        client = BENCHMARK.OpenAiSseClient(
+            "http://127.0.0.1:8000",
+            "tinyllama",
+            short,
+            2,
+            4,
+            10.0,
+            0.0,
+            ((short, 4), (long, 8)),
+        )
+        with mock.patch.object(
+            CORE.http.client,
+            "HTTPConnection",
+            return_value=connection,
+        ):
+            result = client.run(2, time.perf_counter_ns(), False)
+        self.assertEqual(result.outcome, "completed")
+        self.assertEqual(result.workload_index, 1)
+        self.assertEqual(result.input_tokens, 8)
+
     def test_closed_loop_preserves_request_order_and_marks_slow_clients(self) -> None:
         def run_request(
             request_id: int,

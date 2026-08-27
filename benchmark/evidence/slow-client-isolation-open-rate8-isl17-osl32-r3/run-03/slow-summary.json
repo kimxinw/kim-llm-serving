@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "benchmark_path": "http_sse",
+  "mode": "open-loop",
+  "engine_dir": "/home/xinwang/workspaces/trtllm016-spike/engines/tinyllama-1.1b-chat-fp16-tp1-bs8",
+  "model": "TinyLlama-1.1B-Chat-v1.0",
+  "revision": "trtllm-0.16.0-engine",
+  "workload_fingerprint": "013cf0c05f083773340d61c256a32240e92171b332a25ed7521733a86c129a37",
+  "concurrency": 4,
+  "max_inflight": 32,
+  "warmup_requests": 5,
+  "measured_requests": 120,
+  "input_tokens": 17,
+  "input_token_ids": [
+    529,
+    29989,
+    1792,
+    29989,
+    29958,
+    13,
+    10994,
+    2,
+    29871,
+    13,
+    29966,
+    29989,
+    465,
+    22137,
+    29989,
+    29958,
+    13
+  ],
+  "max_new_tokens": 32,
+  "streaming": true,
+  "sampling": {
+    "temperature": 1.0,
+    "top_k": 1,
+    "top_p": 1.0,
+    "random_seed": 0
+  },
+  "metric_boundaries": {
+    "ttft": "client request start to first non-empty SSE content",
+    "tpot": "first-to-last SSE content duration divided by Terminal completion_tokens minus one",
+    "e2e": "client request start through the SSE [DONE] marker",
+    "connection_mode": "one HTTP/1.1 connection per request",
+    "resource_watermarks": "cumulative since Worker/Gateway start and therefore include warmup"
+  },
+  "load": {
+    "target_offered_rate_rps": 8.0,
+    "arrival_distribution": "constant",
+    "arrival_seed": 0,
+    "load_generation_seconds": 14.875,
+    "slow_request_every": 16,
+    "slow_read_delay_ms": 62.5
+  },
+  "slo": {
+    "ttft_ms": 50.0,
+    "e2e_ms": 400.0
+  },
+  "worker_startup_ms": 6455.175271,
+  "gateway_startup_ms": 2128.148747,
+  "duration_seconds": 15.901772572,
+  "offered_requests": 120,
+  "accepted_requests": 120,
+  "completed_requests": 120,
+  "successful_requests": 120,
+  "failed_requests": 0,
+  "rejected_requests": 0,
+  "terminal_error_requests": 0,
+  "client_failure_requests": 0,
+  "slow_client_requests": 7,
+  "good_requests": 113,
+  "slo_attainment": 0.9416666666666667,
+  "goodput_rps": 7.106126030186819,
+  "request_throughput_rps": 7.54632852763202,
+  "output_token_throughput_tps": 241.48251288422463,
+  "rejections_by_code": {},
+  "terminal_errors_by_code": {},
+  "ttft_ms": {
+    "p50": 17.253203,
+    "p95": 21.931704,
+    "p99": 22.847704
+  },
+  "tpot_ms": {
+    "p50": 7.8924954838709676,
+    "p95": 62.61798425806452,
+    "p99": 62.67048990322581
+  },
+  "e2e_ms": {
+    "p50": 261.940125,
+    "p95": 2019.765085,
+    "p99": 2025.614702
+  },
+  "scheduling_lag_ms": {
+    "p50": 0.208752,
+    "p95": 0.388774,
+    "p99": 0.454119
+  },
+  "healthy_client_ttft_ms": {
+    "p50": 17.107203,
+    "p95": 22.127303,
+    "p99": 22.847704
+  },
+  "healthy_client_e2e_ms": {
+    "p50": 260.71453,
+    "p95": 290.656251,
+    "p99": 292.108352
+  },
+  "slow_client_ttft_ms": {
+    "p50": 18.819628,
+    "p95": 21.621704,
+    "p99": 21.621704
+  },
+  "slow_client_e2e_ms": {
+    "p50": 2023.383718,
+    "p95": 2026.864461,
+    "p99": 2026.864461
+  },
+  "unique_output_text_sha256": [
+    "49319d8295cf05880c9ae97ca74bc2bc1e5ba387edec57a1c43b1f53e86b2455"
+  ],
+  "gateway_metrics_before_measurement": {
+    "kim_llm_gateway_connected": 1.0,
+    "kim_llm_gateway_ready": 1.0,
+    "kim_llm_gateway_requests_offered_total": 5.0,
+    "kim_llm_gateway_requests_accepted_total": 5.0,
+    "kim_llm_gateway_active_requests": 0.0,
+    "kim_llm_gateway_active_requests_high_watermark": 4.0,
+    "kim_llm_gateway_http_disconnect_cancels_total": 0.0,
+    "kim_llm_gateway_sse_backpressure_cancels_total": 0.0,
+    "kim_llm_gateway_terminal_drain_timeouts_total": 0.0,
+    "kim_llm_gateway_sse_buffered_events": 0.0,
+    "kim_llm_gateway_sse_buffer_high_watermark": 4.0,
+    "kim_llm_worker_active_requests": 0.0,
+    "kim_llm_worker_reserved_input_tokens": 0.0,
+    "kim_llm_worker_reserved_output_tokens": 0.0,
+    "kim_llm_worker_session_egress_frames": 0.0,
+    "kim_llm_worker_session_egress_bytes": 0.0,
+    "kim_llm_worker_session_egress_high_watermark_frames": 6.0,
+    "kim_llm_worker_session_egress_high_watermark_bytes": 1113.0,
+    "kim_llm_worker_requests_rejected_total": 0.0,
+    "kim_llm_worker_backpressure_requests_total": 0.0,
+    "kim_llm_worker_cancelled_requests_total": 0.0,
+    "kim_llm_gateway_terminals_total{code=\"ok\"}": 5.0
+  },
+  "gateway_metrics_after_measurement": {
+    "kim_llm_gateway_connected": 1.0,
+    "kim_llm_gateway_ready": 1.0,
+    "kim_llm_gateway_requests_offered_total": 125.0,
+    "kim_llm_gateway_requests_accepted_total": 125.0,
+    "kim_llm_gateway_active_requests": 0.0,
+    "kim_llm_gateway_active_requests_high_watermark": 4.0,
+    "kim_llm_gateway_http_disconnect_cancels_total": 0.0,
+    "kim_llm_gateway_sse_backpressure_cancels_total": 0.0,
+    "kim_llm_gateway_terminal_drain_timeouts_total": 0.0,
+    "kim_llm_gateway_sse_buffered_events": 0.0,
+    "kim_llm_gateway_sse_buffer_high_watermark": 4.0,
+    "kim_llm_worker_active_requests": 0.0,
+    "kim_llm_worker_reserved_input_tokens": 0.0,
+    "kim_llm_worker_reserved_output_tokens": 0.0,
+    "kim_llm_worker_session_egress_frames": 0.0,
+    "kim_llm_worker_session_egress_bytes": 0.0,
+    "kim_llm_worker_session_egress_high_watermark_frames": 6.0,
+    "kim_llm_worker_session_egress_high_watermark_bytes": 1113.0,
+    "kim_llm_worker_requests_rejected_total": 0.0,
+    "kim_llm_worker_backpressure_requests_total": 0.0,
+    "kim_llm_worker_cancelled_requests_total": 0.0,
+    "kim_llm_gateway_terminals_total{code=\"ok\"}": 125.0
+  },
+  "measurement_counter_deltas": {
+    "kim_llm_gateway_http_disconnect_cancels_total": 0.0,
+    "kim_llm_gateway_requests_accepted_total": 120.0,
+    "kim_llm_gateway_requests_offered_total": 120.0,
+    "kim_llm_gateway_sse_backpressure_cancels_total": 0.0,
+    "kim_llm_gateway_terminal_drain_timeouts_total": 0.0,
+    "kim_llm_gateway_terminals_total{code=\"ok\"}": 120.0,
+    "kim_llm_worker_backpressure_requests_total": 0.0,
+    "kim_llm_worker_cancelled_requests_total": 0.0,
+    "kim_llm_worker_requests_rejected_total": 0.0
+  },
+  "resources_released": true,
+  "created_at_utc": "2026-08-26T01:23:56.431445+00:00",
+  "git_commit": "e376f7897fd2cda1fdb9cf7631ed99d64c507036",
+  "git_dirty": false,
+  "cuda_visible_devices": "",
+  "manifest": {
+    "model_id": "TinyLlama-1.1B-Chat-v1.0",
+    "revision": "trtllm-0.16.0-engine",
+    "tokenizer_fingerprint": "sha256:493631b1b577a51e36f3523ebc5e37d83888a66b819743a5b09830e6f28070d6",
+    "chat_template_fingerprint": "sha256:3fdae682c937cb57e27b62bbf01898d71f7d0bf2c4a11897d972ab256fa2a0b4",
+    "engine_fingerprint": "f1ca6af9b682bc31ab44f339aefa521a54e705099ccf0508fa1c807f5f0233f7",
+    "eos_token_id": 2,
+    "pad_token_id": 2,
+    "max_input_tokens": 512,
+    "max_output_tokens": 32,
+    "max_sequence_tokens": 544,
+    "precision": "fp16",
+    "max_batch_size": 8
+  }
+}

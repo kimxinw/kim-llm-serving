@@ -90,6 +90,7 @@ add_library(
         "${KIM_LLM_ROOT}/src/runtime/generation_mailbox.cpp"
         "${KIM_LLM_ROOT}/src/runtime/generation_runtime.cpp"
         "${KIM_LLM_ROOT}/src/runtime/request_state.cpp"
+        "${KIM_LLM_ROOT}/src/runtime/slo_admission_policy.cpp"
 )
 add_library(kim_llm::runtime ALIAS kim_llm_runtime)
 
@@ -374,6 +375,14 @@ if(BUILD_TESTING)
         llm_admission_controller_test
         llm_admission_controller_contract
         tests/runtime/llm_admission_controller_test.cpp
+        10
+        kim_llm::runtime
+    )
+
+    kim_llm_add_contract_test(
+        llm_slo_admission_policy_test
+        llm_slo_admission_policy_contract
+        tests/runtime/llm_slo_admission_policy_test.cpp
         10
         kim_llm::runtime
     )

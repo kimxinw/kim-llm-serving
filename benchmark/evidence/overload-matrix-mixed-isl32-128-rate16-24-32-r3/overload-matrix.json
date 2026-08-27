@@ -1,0 +1,581 @@
+{
+  "schema_version": 1,
+  "benchmark": "three_strategy_open_loop_overload_matrix",
+  "created_at_utc": "2026-08-26T09:50:57.680737+00:00",
+  "git_commit": "969897b5112f0876033e946789887abaa7a54b66",
+  "git_dirty": false,
+  "minimum_repetitions_met": true,
+  "balanced_execution_order_cycle": true,
+  "options": {
+    "worker": "/home/xinwang/projects/kim-llm-serving/build-llm/llm_worker",
+    "engine_dir": "/home/xinwang/workspaces/trtllm016-spike/engines/tinyllama-1.1b-chat-fp16-tp1-bs8",
+    "tokenizer_path": "/home/xinwang/workspaces/trtllm016-spike/models/TinyLlama-1.1B-Chat-v1.0",
+    "workloads_file": "/home/xinwang/projects/kim-llm-serving/benchmark/workloads/overload-mixed-isl32-128.json",
+    "slo_profile": "/home/xinwang/projects/kim-llm-serving/benchmark/evidence/slo-profile-calibration-isl32-128-c1-2-4-8-r3/slo-profile.json",
+    "output_dir": "/home/xinwang/projects/kim-llm-serving/benchmark/results/overload-matrix-mixed-isl32-128-rate16-24-32-r3-v2",
+    "offered_rates": [
+      16.0,
+      24.0,
+      32.0
+    ],
+    "repetitions": 3,
+    "warmup_requests": 8,
+    "measured_requests": 240,
+    "max_new_tokens": 32,
+    "max_inflight": 64,
+    "max_pending_requests": 64,
+    "ttft_slo_ms": 50.0,
+    "e2e_slo_ms": 400.0,
+    "fixed_max_active_requests": 8,
+    "token_max_active_requests": 8,
+    "token_input_budget": 256,
+    "token_output_budget": 256,
+    "arrival_distribution": "poisson",
+    "arrival_seed": 20260826
+  },
+  "workloads_sha256": "893d80f1d45b8da02d93936a7f3b2350002ae4031e423827811500a737b829f2",
+  "profile_sha256": "cbc5d37da6223b2fe67705e2e4eaddee3388d45a240a2dc98c3f951c0c619eba",
+  "strategies": {
+    "fixed-concurrency": {
+      "name": "fixed-concurrency",
+      "max_active_requests": 8,
+      "max_total_input_tokens": 4096,
+      "max_reserved_output_tokens": 256,
+      "slo_profile": null
+    },
+    "token-budget": {
+      "name": "token-budget",
+      "max_active_requests": 8,
+      "max_total_input_tokens": 256,
+      "max_reserved_output_tokens": 256,
+      "slo_profile": null
+    },
+    "profile-guided": {
+      "name": "profile-guided",
+      "max_active_requests": 8,
+      "max_total_input_tokens": 256,
+      "max_reserved_output_tokens": 256,
+      "slo_profile": "/home/xinwang/projects/kim-llm-serving/benchmark/evidence/slo-profile-calibration-isl32-128-c1-2-4-8-r3/slo-profile.json"
+    }
+  },
+  "execution_orders": [
+    {
+      "offered_rate_rps": 16.0,
+      "repetition": 1,
+      "order": [
+        "fixed-concurrency",
+        "token-budget",
+        "profile-guided"
+      ]
+    },
+    {
+      "offered_rate_rps": 16.0,
+      "repetition": 2,
+      "order": [
+        "token-budget",
+        "profile-guided",
+        "fixed-concurrency"
+      ]
+    },
+    {
+      "offered_rate_rps": 16.0,
+      "repetition": 3,
+      "order": [
+        "profile-guided",
+        "fixed-concurrency",
+        "token-budget"
+      ]
+    },
+    {
+      "offered_rate_rps": 24.0,
+      "repetition": 1,
+      "order": [
+        "token-budget",
+        "profile-guided",
+        "fixed-concurrency"
+      ]
+    },
+    {
+      "offered_rate_rps": 24.0,
+      "repetition": 2,
+      "order": [
+        "profile-guided",
+        "fixed-concurrency",
+        "token-budget"
+      ]
+    },
+    {
+      "offered_rate_rps": 24.0,
+      "repetition": 3,
+      "order": [
+        "fixed-concurrency",
+        "token-budget",
+        "profile-guided"
+      ]
+    },
+    {
+      "offered_rate_rps": 32.0,
+      "repetition": 1,
+      "order": [
+        "profile-guided",
+        "fixed-concurrency",
+        "token-budget"
+      ]
+    },
+    {
+      "offered_rate_rps": 32.0,
+      "repetition": 2,
+      "order": [
+        "fixed-concurrency",
+        "token-budget",
+        "profile-guided"
+      ]
+    },
+    {
+      "offered_rate_rps": 32.0,
+      "repetition": 3,
+      "order": [
+        "token-budget",
+        "profile-guided",
+        "fixed-concurrency"
+      ]
+    }
+  ],
+  "rates": [
+    {
+      "offered_rate_rps": 16.0,
+      "strategies": {
+        "fixed-concurrency": {
+          "goodput_rps": {
+            "mean": 13.64354749022831,
+            "sample_stdev": 0.7506835347036194
+          },
+          "slo_attainment": {
+            "mean": 0.8694444444444445,
+            "sample_stdev": 0.002405626121623432
+          },
+          "accepted_requests": {
+            "mean": 213.0,
+            "sample_stdev": 3.0
+          },
+          "completed_requests": {
+            "mean": 213.0,
+            "sample_stdev": 3.0
+          },
+          "rejected_requests": {
+            "mean": 27.0,
+            "sample_stdev": 3.0
+          },
+          "good_requests": {
+            "mean": 208.66666666666666,
+            "sample_stdev": 0.5773502691896257
+          },
+          "ttft_p95_ms": {
+            "mean": 40.4459,
+            "sample_stdev": 1.6473461400352374
+          },
+          "e2e_p95_ms": {
+            "mean": 387.94928766666663,
+            "sample_stdev": 12.076283278082112
+          },
+          "accepted_slo_misses": {
+            "mean": 4.333333333333333,
+            "sample_stdev": 2.516611478423583
+          },
+          "all_resources_released": true,
+          "rejections_by_code": {
+            "queue_full": 81
+          }
+        },
+        "token-budget": {
+          "goodput_rps": {
+            "mean": 10.026941175988155,
+            "sample_stdev": 0.4591598600397855
+          },
+          "slo_attainment": {
+            "mean": 0.638888888888889,
+            "sample_stdev": 0.01924500897298752
+          },
+          "accepted_requests": {
+            "mean": 153.33333333333334,
+            "sample_stdev": 4.618802153517006
+          },
+          "completed_requests": {
+            "mean": 153.33333333333334,
+            "sample_stdev": 4.618802153517006
+          },
+          "rejected_requests": {
+            "mean": 86.66666666666667,
+            "sample_stdev": 4.618802153517006
+          },
+          "good_requests": {
+            "mean": 153.33333333333334,
+            "sample_stdev": 4.618802153517006
+          },
+          "ttft_p95_ms": {
+            "mean": 36.403015,
+            "sample_stdev": 1.4197039287414832
+          },
+          "e2e_p95_ms": {
+            "mean": 305.08019766666666,
+            "sample_stdev": 4.974523857156025
+          },
+          "accepted_slo_misses": {
+            "mean": 0.0,
+            "sample_stdev": 0.0
+          },
+          "all_resources_released": true,
+          "rejections_by_code": {
+            "resource_exhausted": 260
+          }
+        },
+        "profile-guided": {
+          "goodput_rps": {
+            "mean": 5.760482005793892,
+            "sample_stdev": 0.10975124584856662
+          },
+          "slo_attainment": {
+            "mean": 0.3652777777777778,
+            "sample_stdev": 0.01577474540500077
+          },
+          "accepted_requests": {
+            "mean": 87.66666666666667,
+            "sample_stdev": 3.7859388972001824
+          },
+          "completed_requests": {
+            "mean": 87.66666666666667,
+            "sample_stdev": 3.7859388972001824
+          },
+          "rejected_requests": {
+            "mean": 152.33333333333334,
+            "sample_stdev": 3.7859388972001824
+          },
+          "good_requests": {
+            "mean": 87.66666666666667,
+            "sample_stdev": 3.7859388972001824
+          },
+          "ttft_p95_ms": {
+            "mean": 36.10584533333333,
+            "sample_stdev": 0.9659345541688301
+          },
+          "e2e_p95_ms": {
+            "mean": 299.795608,
+            "sample_stdev": 3.811191131606099
+          },
+          "accepted_slo_misses": {
+            "mean": 0.0,
+            "sample_stdev": 0.0
+          },
+          "all_resources_released": true,
+          "rejections_by_code": {
+            "slo_predicted_miss": 457
+          },
+          "profile_ttft_p95_error_ms": {
+            "mean": -16.48944966666667,
+            "sample_stdev": 7.963707568203059
+          }
+        }
+      },
+      "paired": {
+        "token_budget_minus_fixed_goodput_rps": {
+          "mean": -3.6166063142401543,
+          "sample_stdev": 0.42276603136324625
+        },
+        "profile_minus_token_budget_goodput_rps": {
+          "mean": -4.2664591701942625,
+          "sample_stdev": 0.36763116885897107
+        }
+      }
+    },
+    {
+      "offered_rate_rps": 24.0,
+      "strategies": {
+        "fixed-concurrency": {
+          "goodput_rps": {
+            "mean": 12.071644246199467,
+            "sample_stdev": 2.659756812647727
+          },
+          "slo_attainment": {
+            "mean": 0.5194444444444445,
+            "sample_stdev": 0.10427771858164427
+          },
+          "accepted_requests": {
+            "mean": 169.66666666666666,
+            "sample_stdev": 8.082903768654761
+          },
+          "completed_requests": {
+            "mean": 169.66666666666666,
+            "sample_stdev": 8.082903768654761
+          },
+          "rejected_requests": {
+            "mean": 70.33333333333333,
+            "sample_stdev": 8.082903768654761
+          },
+          "good_requests": {
+            "mean": 124.66666666666667,
+            "sample_stdev": 25.02665245959462
+          },
+          "ttft_p95_ms": {
+            "mean": 45.769847,
+            "sample_stdev": 3.8862443225216827
+          },
+          "e2e_p95_ms": {
+            "mean": 425.444072,
+            "sample_stdev": 14.76956154590279
+          },
+          "accepted_slo_misses": {
+            "mean": 45.0,
+            "sample_stdev": 20.663978319771825
+          },
+          "all_resources_released": true,
+          "rejections_by_code": {
+            "queue_full": 211
+          }
+        },
+        "token-budget": {
+          "goodput_rps": {
+            "mean": 12.424822129002166,
+            "sample_stdev": 0.40992952634708696
+          },
+          "slo_attainment": {
+            "mean": 0.5333333333333333,
+            "sample_stdev": 0.02319901817845845
+          },
+          "accepted_requests": {
+            "mean": 128.33333333333334,
+            "sample_stdev": 5.033222956847166
+          },
+          "completed_requests": {
+            "mean": 128.33333333333334,
+            "sample_stdev": 5.033222956847166
+          },
+          "rejected_requests": {
+            "mean": 111.66666666666667,
+            "sample_stdev": 5.033222956847166
+          },
+          "good_requests": {
+            "mean": 128.0,
+            "sample_stdev": 5.5677643628300215
+          },
+          "ttft_p95_ms": {
+            "mean": 36.916441666666664,
+            "sample_stdev": 0.23423409963182887
+          },
+          "e2e_p95_ms": {
+            "mean": 304.864353,
+            "sample_stdev": 7.3079900555326285
+          },
+          "accepted_slo_misses": {
+            "mean": 0.3333333333333333,
+            "sample_stdev": 0.5773502691896257
+          },
+          "all_resources_released": true,
+          "rejections_by_code": {
+            "resource_exhausted": 335
+          }
+        },
+        "profile-guided": {
+          "goodput_rps": {
+            "mean": 6.354954264474867,
+            "sample_stdev": 0.25327715293487
+          },
+          "slo_attainment": {
+            "mean": 0.26944444444444443,
+            "sample_stdev": 0.01339395939026801
+          },
+          "accepted_requests": {
+            "mean": 64.66666666666667,
+            "sample_stdev": 3.2145502536643185
+          },
+          "completed_requests": {
+            "mean": 64.66666666666667,
+            "sample_stdev": 3.2145502536643185
+          },
+          "rejected_requests": {
+            "mean": 175.33333333333334,
+            "sample_stdev": 3.2145502536643185
+          },
+          "good_requests": {
+            "mean": 64.66666666666667,
+            "sample_stdev": 3.2145502536643185
+          },
+          "ttft_p95_ms": {
+            "mean": 35.58733566666667,
+            "sample_stdev": 1.2894539858809753
+          },
+          "e2e_p95_ms": {
+            "mean": 291.70834633333334,
+            "sample_stdev": 5.995476706820427
+          },
+          "accepted_slo_misses": {
+            "mean": 0.0,
+            "sample_stdev": 0.0
+          },
+          "all_resources_released": true,
+          "rejections_by_code": {
+            "slo_predicted_miss": 526
+          },
+          "profile_ttft_p95_error_ms": {
+            "mean": -16.197551833333335,
+            "sample_stdev": 7.98801823339247
+          }
+        }
+      },
+      "paired": {
+        "token_budget_minus_fixed_goodput_rps": {
+          "mean": 0.3531778828026996,
+          "sample_stdev": 2.8758693800704904
+        },
+        "profile_minus_token_budget_goodput_rps": {
+          "mean": -6.069867864527299,
+          "sample_stdev": 0.18123582777033248
+        }
+      }
+    },
+    {
+      "offered_rate_rps": 32.0,
+      "strategies": {
+        "fixed-concurrency": {
+          "goodput_rps": {
+            "mean": 12.128574806037074,
+            "sample_stdev": 3.364053510515318
+          },
+          "slo_attainment": {
+            "mean": 0.3986111111111111,
+            "sample_stdev": 0.13497256236951494
+          },
+          "accepted_requests": {
+            "mean": 136.66666666666666,
+            "sample_stdev": 9.60902353693305
+          },
+          "completed_requests": {
+            "mean": 136.66666666666666,
+            "sample_stdev": 9.60902353693305
+          },
+          "rejected_requests": {
+            "mean": 103.33333333333333,
+            "sample_stdev": 9.60902353693305
+          },
+          "good_requests": {
+            "mean": 95.66666666666667,
+            "sample_stdev": 32.39341496868358
+          },
+          "ttft_p95_ms": {
+            "mean": 47.931915333333336,
+            "sample_stdev": 3.4567513831906282
+          },
+          "e2e_p95_ms": {
+            "mean": 426.36637433333334,
+            "sample_stdev": 23.983074651130323
+          },
+          "accepted_slo_misses": {
+            "mean": 41.0,
+            "sample_stdev": 23.430749027719962
+          },
+          "all_resources_released": true,
+          "rejections_by_code": {
+            "queue_full": 310
+          }
+        },
+        "token-budget": {
+          "goodput_rps": {
+            "mean": 13.637707575022596,
+            "sample_stdev": 0.5364398610479778
+          },
+          "slo_attainment": {
+            "mean": 0.44166666666666665,
+            "sample_stdev": 0.015023130314433296
+          },
+          "accepted_requests": {
+            "mean": 106.0,
+            "sample_stdev": 3.605551275463989
+          },
+          "completed_requests": {
+            "mean": 106.0,
+            "sample_stdev": 3.605551275463989
+          },
+          "rejected_requests": {
+            "mean": 134.0,
+            "sample_stdev": 3.605551275463989
+          },
+          "good_requests": {
+            "mean": 106.0,
+            "sample_stdev": 3.605551275463989
+          },
+          "ttft_p95_ms": {
+            "mean": 37.282134,
+            "sample_stdev": 2.0765209924272376
+          },
+          "e2e_p95_ms": {
+            "mean": 314.17331033333335,
+            "sample_stdev": 13.78433955512505
+          },
+          "accepted_slo_misses": {
+            "mean": 0.0,
+            "sample_stdev": 0.0
+          },
+          "all_resources_released": true,
+          "rejections_by_code": {
+            "resource_exhausted": 402
+          }
+        },
+        "profile-guided": {
+          "goodput_rps": {
+            "mean": 6.403555320960528,
+            "sample_stdev": 0.0903252782249349
+          },
+          "slo_attainment": {
+            "mean": 0.20694444444444446,
+            "sample_stdev": 0.015774745405000762
+          },
+          "accepted_requests": {
+            "mean": 49.666666666666664,
+            "sample_stdev": 3.7859388972001824
+          },
+          "completed_requests": {
+            "mean": 49.666666666666664,
+            "sample_stdev": 3.7859388972001824
+          },
+          "rejected_requests": {
+            "mean": 190.33333333333334,
+            "sample_stdev": 3.7859388972001824
+          },
+          "good_requests": {
+            "mean": 49.666666666666664,
+            "sample_stdev": 3.7859388972001824
+          },
+          "ttft_p95_ms": {
+            "mean": 36.27752566666667,
+            "sample_stdev": 0.8651986605660777
+          },
+          "e2e_p95_ms": {
+            "mean": 309.9210386666667,
+            "sample_stdev": 2.591687857034562
+          },
+          "accepted_slo_misses": {
+            "mean": 0.0,
+            "sample_stdev": 0.0
+          },
+          "all_resources_released": true,
+          "rejections_by_code": {
+            "slo_predicted_miss": 571
+          },
+          "profile_ttft_p95_error_ms": {
+            "mean": -16.258178833333336,
+            "sample_stdev": 8.213233032522586
+          }
+        }
+      },
+      "paired": {
+        "token_budget_minus_fixed_goodput_rps": {
+          "mean": 1.5091327689855192,
+          "sample_stdev": 3.8094831696639972
+        },
+        "profile_minus_token_budget_goodput_rps": {
+          "mean": -7.234152254062066,
+          "sample_stdev": 0.5939078849570143
+        }
+      }
+    }
+  ]
+}

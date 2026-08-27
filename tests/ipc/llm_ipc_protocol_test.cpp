@@ -231,6 +231,13 @@ void testStableNames(int& failures) {
         "StatusCode string must parse",
         failures);
     expect(
+        statusCodeName(kimrt::StatusCode::SloPredictedMiss) ==
+            "slo_predicted_miss" &&
+        parseStatusCode("slo_predicted_miss") ==
+            kimrt::StatusCode::SloPredictedMiss,
+        "SLO rejection must have a stable wire name",
+        failures);
+    expect(
         finishReasonName(FinishReason::Backpressure) == "backpressure",
         "FinishReason must use stable string",
         failures);

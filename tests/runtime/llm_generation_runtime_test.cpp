@@ -635,6 +635,56 @@ void testAdmissionRejections(int& failures) {
     expect(fixture.runtime.stop().ok(), "Runtime stop must succeed", failures);
 }
 
+void testSloPolicyRejectsBeforeHardAdmission(int& failures) {
+    auto config = makeRuntimeConfig(4, 128, 128);
+    config.slo_policy = kimrt::llm::SloAdmissionPolicyConfig{
+        "model",
+        "revision",
+        "engine",
+        50.0,
+        5.0,
+        {
+            {32, 1, 30.0},
+            {32, 2, 48.0},
+        },
+    };
+    RuntimeFixture fixture{std::move(config)};
+    expect(fixture.runtime.start().ok(), "Runtime must start", failures);
+
+    auto first = fixture.runtime.submit(makeRequest(35, 17, 32));
+    expect(first.accepted(), "profile-safe request must be accepted", failures);
+
+    auto predicted_miss = fixture.runtime.submit(makeRequest(36, 17, 32));
+    expect(
+        predicted_miss.status.code == StatusCode::SloPredictedMiss,
+        "profile-risk request must return SloPredictedMiss",
+        failures);
+    expect(
+        fixture.backend->submitCalls() == 1,
+        "soft-policy rejection must not reach Backend",
+        failures);
+    auto const snapshot = fixture.runtime.admissionSnapshot();
+    expect(
+        snapshot.active_requests == 1 &&
+            snapshot.reserved_input_tokens == 17 &&
+            snapshot.reserved_output_tokens == 32,
+        "soft-policy rejection must not reserve hard capacity",
+        failures);
+
+    auto uncovered = fixture.runtime.submit(makeRequest(37, 33, 32));
+    expect(
+        uncovered.status.code == StatusCode::SloPredictedMiss,
+        "uncovered input bucket must be conservatively rejected",
+        failures);
+
+    (void)fixture.backend->finish(35, Status::success(), FinishReason::Length);
+    expect(
+        resourcesAreZero(fixture.runtime.admissionSnapshot()),
+        "accepted policy request must release all resources",
+        failures);
+    expect(fixture.runtime.stop().ok(), "Runtime stop must succeed", failures);
+}
+
 void testExpiredDeadlineRejectedBeforeAdmission(int& failures) {
     RuntimeFixture fixture;
     expect(fixture.runtime.start().ok(), "Runtime must start", failures);
@@ -854,6 +904,7 @@ int main() {
         testNormalTerminalReleasesAdmission(failures);
         testBackendSubmitFailureReleasesAdmission(failures);
         testAdmissionRejections(failures);
+        testSloPolicyRejectsBeforeHardAdmission(failures);
         testExpiredDeadlineRejectedBeforeAdmission(failures);
         testCancelTimeoutAndBackpressure(failures);
         testStopConvergesRequestsAndIsIdempotent(failures);
