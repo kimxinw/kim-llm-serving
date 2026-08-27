@@ -487,6 +487,18 @@ if(BUILD_TESTING)
                 ENVIRONMENT
                     "PYTHONPATH=${KIM_LLM_ROOT}/clients/python:${KIM_LLM_ROOT}/gateway/python:${KIM_LLM_ROOT}/tests/gateway/python;PYTHONDONTWRITEBYTECODE=1"
         )
+        add_test(
+            NAME llm_python_project_entrypoint_contract
+            COMMAND
+                "${Python3_EXECUTABLE}"
+                "${KIM_LLM_ROOT}/tests/tools/test_project_entrypoint.py"
+        )
+        set_tests_properties(
+            llm_python_project_entrypoint_contract
+            PROPERTIES
+                TIMEOUT 20
+                ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        )
     else()
         message(
             STATUS
