@@ -1,0 +1,539 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Mapping, Optional, Sequence
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent
+DEFAULT_CPU_BUILD_DIR = REPOSITORY_ROOT / "build-cpu"
+DEFAULT_GPU_BUILD_DIR = REPOSITORY_ROOT / "build-llm"
+
+
+class EntryPointError(RuntimeError):
+    pass
+
+
+class CommandRunner:
+    def __init__(self, dry_run: bool) -> None:
+        self._dry_run = dry_run
+
+    @property
+    def dry_run(self) -> bool:
+        return self._dry_run
+
+    def show(self, command: Sequence[str]) -> None:
+        print(f"+ {shlex.join(command)}", flush=True)
+
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        environment: Optional[Mapping[str, str]] = None,
+    ) -> None:
+        self.show(command)
+        if self._dry_run:
+            return
+        subprocess.run(
+            command,
+            cwd=REPOSITORY_ROOT,
+            env=dict(environment) if environment is not None else None,
+            check=True,
+        )
+
+
+def repository_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = REPOSITORY_ROOT / path
+    return path.resolve()
+
+
+def positive_integer(value: str) -> int:
+    converted = int(value)
+    if converted <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return converted
+
+
+def non_negative_integer(value: str) -> int:
+    converted = int(value)
+    if converted < 0:
+        raise argparse.ArgumentTypeError("must not be negative")
+    return converted
+
+
+def require_existing(path: Path, description: str, *, directory: bool) -> None:
+    exists = path.is_dir() if directory else path.is_file()
+    if not exists:
+        kind = "directory" if directory else "file"
+        raise EntryPointError(f"{description} {kind} does not exist: {path}")
+
+
+def default_parallelism() -> int:
+    return max(1, min(4, os.cpu_count() or 2))
+
+
+def build_directory(args: argparse.Namespace) -> Path:
+    if args.build_dir is not None:
+        return repository_path(args.build_dir)
+    return DEFAULT_GPU_BUILD_DIR if args.gpu else DEFAULT_CPU_BUILD_DIR
+
+
+def configure_command(args: argparse.Namespace, directory: Path) -> list[str]:
+    command = [
+        "cmake",
+        "-S",
+        str(REPOSITORY_ROOT),
+        "-B",
+        str(directory),
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DBUILD_TESTING=ON",
+        f"-DKIM_LLM_ENABLE_TRTLLM={'ON' if args.gpu else 'OFF'}",
+    ]
+    if args.gpu:
+        cache_exists = (directory / "CMakeCache.txt").is_file()
+        gpu_paths = (
+            ("TRTLLM_SOURCE_DIR", args.trtllm_source_dir),
+            ("TRTLLM_LIB_DIR", args.trtllm_lib_dir),
+            ("TENSORRT_ROOT", args.tensorrt_root),
+            ("KIMRT_LLM_TEST_ENGINE_DIR", args.engine_dir),
+        )
+        required = gpu_paths[:3]
+        missing = [name for name, value in required if value is None]
+        if missing and not cache_exists:
+            raise EntryPointError(
+                "fresh GPU configure requires " + ", ".join(missing)
+            )
+        for name, value in gpu_paths:
+            if value is not None:
+                command.append(f"-D{name}={repository_path(value)}")
+    command.extend(args.cmake_arg)
+    return command
+
+
+def execute_build(args: argparse.Namespace) -> int:
+    runner = CommandRunner(args.dry_run)
+    directory = build_directory(args)
+    runner.run(configure_command(args, directory))
+    runner.run(
+        ["cmake", "--build", str(directory), "--parallel", str(args.parallel)]
+    )
+    return 0
+
+
+def execute_test(args: argparse.Namespace) -> int:
+    runner = CommandRunner(args.dry_run)
+    directory = build_directory(args)
+    if not args.no_build:
+        runner.run(configure_command(args, directory))
+        runner.run(
+            ["cmake", "--build", str(directory), "--parallel", str(args.parallel)]
+        )
+    elif not runner.dry_run and not (directory / "CTestTestfile.cmake").is_file():
+        raise EntryPointError(f"build directory is not configured for tests: {directory}")
+
+    command = [
+        "ctest",
+        "--test-dir",
+        str(directory),
+        "--output-on-failure",
+        "--no-tests=error",
+    ]
+    if not args.gpu:
+        command.extend(["-LE", "gpu"])
+    runner.run(command)
+    return 0
+
+
+def load_json_object(path: Path, description: str) -> Mapping[str, Any]:
+    require_existing(path, description, directory=False)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exception:
+        raise EntryPointError(f"failed to read {description}: {exception}") from exception
+    if not isinstance(value, dict):
+        raise EntryPointError(f"{description} must contain a JSON object")
+    return value
+
+
+def required_string(value: Mapping[str, Any], key: str, description: str) -> str:
+    result = value.get(key)
+    if not isinstance(result, str) or not result:
+        raise EntryPointError(f"{description}.{key} must be a non-empty string")
+    return result
+
+
+def referenced_path(owner: Path, value: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = owner.parent / path
+    return path.resolve()
+
+
+def service_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    python_paths = (
+        str(REPOSITORY_ROOT / "clients" / "python"),
+        str(REPOSITORY_ROOT / "gateway" / "python"),
+    )
+    current = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        python_paths + ((current,) if current else ())
+    )
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return environment
+
+
+class ServiceSupervisor:
+    def __init__(
+        self,
+        worker_command: Sequence[str],
+        gateway_command: Sequence[str],
+        worker_directory: Path,
+        socket_path: Path,
+        readiness_url: str,
+        startup_timeout: float,
+        shutdown_timeout: float,
+        environment: Mapping[str, str],
+        runner: CommandRunner,
+    ) -> None:
+        self._worker_command = list(worker_command)
+        self._gateway_command = list(gateway_command)
+        self._worker_directory = worker_directory
+        self._socket_path = socket_path
+        self._readiness_url = readiness_url
+        self._startup_timeout = startup_timeout
+        self._shutdown_timeout = shutdown_timeout
+        self._environment = dict(environment)
+        self._runner = runner
+        self._worker: Optional[subprocess.Popen[bytes]] = None
+        self._gateway: Optional[subprocess.Popen[bytes]] = None
+        self._stop_requested = False
+
+    def run(self) -> int:
+        self._runner.show(self._worker_command)
+        self._runner.show(self._gateway_command)
+        if self._runner.dry_run:
+            return 0
+        if self._socket_path.exists():
+            raise EntryPointError(
+                f"Worker socket already exists; refuse to remove it: {self._socket_path}"
+            )
+
+        previous_handlers = {
+            signal.SIGINT: signal.getsignal(signal.SIGINT),
+            signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+        }
+        signal.signal(signal.SIGINT, self._request_stop)
+        signal.signal(signal.SIGTERM, self._request_stop)
+        failure: Optional[BaseException] = None
+        try:
+            self._worker = subprocess.Popen(
+                self._worker_command,
+                cwd=self._worker_directory,
+                env=self._environment,
+            )
+            self._wait_for_worker()
+            self._gateway = subprocess.Popen(
+                self._gateway_command,
+                cwd=REPOSITORY_ROOT,
+                env=self._environment,
+            )
+            self._wait_for_gateway()
+            print(f"kim-llm service ready: {self._readiness_url[:-7]}", flush=True)
+            while not self._stop_requested:
+                self._ensure_running(self._worker, "llm_worker")
+                self._ensure_running(self._gateway, "Gateway")
+                time.sleep(0.2)
+        except BaseException as exception:
+            failure = exception
+        finally:
+            stop_errors = self._stop_children()
+            for monitored_signal, previous in previous_handlers.items():
+                signal.signal(monitored_signal, previous)
+
+        if failure is not None:
+            raise failure
+        if stop_errors:
+            raise EntryPointError("; ".join(stop_errors))
+        return 0
+
+    def _request_stop(self, _: int, __: object) -> None:
+        self._stop_requested = True
+
+    def _wait_for_worker(self) -> None:
+        deadline = time.monotonic() + self._startup_timeout
+        while time.monotonic() < deadline and not self._stop_requested:
+            self._ensure_running(self._worker, "llm_worker")
+            if self._socket_path.exists():
+                return
+            time.sleep(0.05)
+        raise EntryPointError(
+            f"timed out waiting for Worker socket: {self._socket_path}"
+        )
+
+    def _wait_for_gateway(self) -> None:
+        deadline = time.monotonic() + self._startup_timeout
+        last_error = "Gateway did not answer readiness"
+        while time.monotonic() < deadline and not self._stop_requested:
+            self._ensure_running(self._gateway, "Gateway")
+            try:
+                with urllib.request.urlopen(self._readiness_url, timeout=1.0) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    if response.status == 200 and payload.get("status") == "ready":
+                        return
+            except (OSError, ValueError, urllib.error.URLError) as exception:
+                last_error = str(exception)
+            time.sleep(0.1)
+        raise EntryPointError(f"timed out waiting for Gateway readiness: {last_error}")
+
+    @staticmethod
+    def _ensure_running(
+        process: Optional[subprocess.Popen[bytes]],
+        description: str,
+    ) -> None:
+        if process is None:
+            raise EntryPointError(f"{description} was not started")
+        return_code = process.poll()
+        if return_code is not None:
+            raise EntryPointError(
+                f"{description} exited unexpectedly with code {return_code}"
+            )
+
+    def _stop_children(self) -> list[str]:
+        errors: list[str] = []
+        for process, description in (
+            (self._gateway, "Gateway"),
+            (self._worker, "llm_worker"),
+        ):
+            if process is None or process.poll() is not None:
+                continue
+            process.terminate()
+            try:
+                process.wait(timeout=self._shutdown_timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10.0)
+                errors.append(f"{description} exceeded graceful shutdown timeout")
+        return errors
+
+
+def execute_serve(args: argparse.Namespace) -> int:
+    runner = CommandRunner(args.dry_run)
+    gateway_config = repository_path(args.gateway_config)
+    worker = repository_path(args.worker)
+    if not runner.dry_run:
+        require_existing(worker, "llm_worker", directory=False)
+    gateway_value = load_json_object(gateway_config, "Gateway configuration")
+    worker_config = referenced_path(
+        gateway_config,
+        required_string(gateway_value, "worker_config_path", "Gateway configuration"),
+    )
+    worker_value = load_json_object(worker_config, "Worker configuration")
+    socket_path = referenced_path(
+        worker_config,
+        required_string(worker_value, "socket_path", "Worker configuration"),
+    )
+    host = gateway_value.get("host", "127.0.0.1")
+    port = gateway_value.get("port", 8000)
+    if not isinstance(host, str) or not host:
+        raise EntryPointError("Gateway configuration.host is invalid")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise EntryPointError("Gateway configuration.port is invalid")
+
+    python = args.python or os.environ.get("KIM_LLM_PYTHON") or sys.executable
+    supervisor = ServiceSupervisor(
+        [str(worker), str(worker_config)],
+        [python, "-m", "kim_llm_gateway", "serve", "--config", str(gateway_config)],
+        worker_config.parent,
+        socket_path,
+        f"http://{host}:{port}/readyz",
+        args.startup_timeout,
+        args.shutdown_timeout,
+        service_environment(),
+        runner,
+    )
+    return supervisor.run()
+
+
+def execute_benchmark(args: argparse.Namespace) -> int:
+    runner = CommandRunner(args.dry_run)
+    engine_value = args.engine_dir or os.environ.get("KIM_LLM_ENGINE_DIR")
+    tokenizer_value = args.tokenizer_path or os.environ.get("KIM_LLM_TOKENIZER_PATH")
+    if not engine_value or not tokenizer_value:
+        raise EntryPointError(
+            "benchmark requires --engine-dir/--tokenizer-path or "
+            "KIM_LLM_ENGINE_DIR/KIM_LLM_TOKENIZER_PATH"
+        )
+
+    build_dir = repository_path(args.build_dir)
+    engine_dir = repository_path(engine_value)
+    tokenizer_path = repository_path(tokenizer_value)
+    direct_benchmark = build_dir / "llm_direct_benchmark"
+    worker = build_dir / "llm_worker"
+    if not runner.dry_run:
+        require_existing(direct_benchmark, "Direct benchmark", directory=False)
+        require_existing(worker, "llm_worker", directory=False)
+        require_existing(engine_dir, "Engine", directory=True)
+        require_existing(tokenizer_path, "Tokenizer", directory=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_dir = repository_path(
+        args.output_dir
+        or f"benchmark/results/direct-ipc-http-{'formal' if args.formal else 'smoke'}-{timestamp}"
+    )
+    repetitions = args.repetitions or (3 if args.formal else 1)
+    warmup_requests = (
+        args.warmup_requests if args.warmup_requests is not None else (5 if args.formal else 1)
+    )
+    measured_requests = args.measured_requests or (200 if args.formal else 5)
+    max_new_tokens = args.max_new_tokens or (32 if args.formal else 8)
+    python = args.python or os.environ.get("KIM_LLM_PYTHON") or sys.executable
+    command = [
+        python,
+        str(REPOSITORY_ROOT / "benchmark" / "run_direct_ipc_http_benchmark.py"),
+        "--direct-benchmark",
+        str(direct_benchmark),
+        "--worker",
+        str(worker),
+        "--engine-dir",
+        str(engine_dir),
+        "--tokenizer-path",
+        str(tokenizer_path),
+        "--output-dir",
+        str(output_dir),
+        "--model",
+        args.model,
+        "--revision",
+        args.revision,
+        "--repetitions",
+        str(repetitions),
+        "--concurrency",
+        str(args.concurrency),
+        "--warmup-requests",
+        str(warmup_requests),
+        "--measured-requests",
+        str(measured_requests),
+        "--max-new-tokens",
+        str(max_new_tokens),
+        "--cuda-device",
+        args.cuda_device,
+        "--startup-timeout",
+        str(args.startup_timeout),
+        "--request-timeout",
+        str(args.request_timeout),
+    ]
+    if args.messages_file is not None:
+        command.extend(["--messages-file", str(repository_path(args.messages_file))])
+    else:
+        command.extend(["--prompt", args.prompt])
+    if not args.formal or args.allow_dirty:
+        command.append("--allow-dirty")
+    runner.run(command, environment=service_environment())
+    return 0
+
+
+def add_build_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--gpu", action="store_true", help="build the TRT-LLM path")
+    parser.add_argument("--build-dir", type=Path)
+    parser.add_argument("--parallel", type=positive_integer, default=default_parallelism())
+    parser.add_argument("--trtllm-source-dir", type=Path, default=os.environ.get("TRTLLM_SOURCE_DIR"))
+    parser.add_argument("--trtllm-lib-dir", type=Path, default=os.environ.get("TRTLLM_LIB_DIR"))
+    parser.add_argument("--tensorrt-root", type=Path, default=os.environ.get("TENSORRT_ROOT"))
+    parser.add_argument("--engine-dir", type=Path, default=os.environ.get("KIMRT_LLM_TEST_ENGINE_DIR"))
+    parser.add_argument(
+        "--cmake-arg",
+        action="append",
+        default=[],
+        help="append a CMake argument; use --cmake-arg=-DNAME=VALUE",
+    )
+    parser.add_argument("--dry-run", action="store_true")
+
+
+def make_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="kim-llm",
+        description="Unified build, test, serve, and benchmark entrypoint.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    build = subparsers.add_parser("build", help="configure and build CPU or GPU targets")
+    add_build_arguments(build)
+    build.set_defaults(handler=execute_build)
+
+    test = subparsers.add_parser("test", help="build and run contract tests")
+    add_build_arguments(test)
+    test.add_argument("--no-build", action="store_true")
+    test.set_defaults(handler=execute_test)
+
+    serve = subparsers.add_parser("serve", help="run llm_worker and the HTTP Gateway")
+    serve.add_argument(
+        "--gateway-config",
+        type=Path,
+        default=os.environ.get("KIM_LLM_GATEWAY_CONFIG", "configs/gateway.local.json"),
+    )
+    serve.add_argument("--worker", type=Path, default="build-llm/llm_worker")
+    serve.add_argument("--python")
+    serve.add_argument("--startup-timeout", type=float, default=180.0)
+    serve.add_argument("--shutdown-timeout", type=float, default=30.0)
+    serve.add_argument("--dry-run", action="store_true")
+    serve.set_defaults(handler=execute_serve)
+
+    benchmark = subparsers.add_parser(
+        "benchmark",
+        help="run the rotating Direct/IPC/HTTP benchmark",
+    )
+    benchmark.add_argument("--build-dir", type=Path, default="build-llm")
+    benchmark.add_argument("--engine-dir", type=Path)
+    benchmark.add_argument("--tokenizer-path", type=Path)
+    benchmark.add_argument("--output-dir", type=Path)
+    benchmark.add_argument("--model", default="TinyLlama-1.1B-Chat-v1.0")
+    benchmark.add_argument("--revision", default="trtllm-0.16.0-engine")
+    messages = benchmark.add_mutually_exclusive_group()
+    messages.add_argument("--prompt", default="Hello")
+    messages.add_argument("--messages-file", type=Path)
+    benchmark.add_argument("--formal", action="store_true")
+    benchmark.add_argument("--allow-dirty", action="store_true")
+    benchmark.add_argument("--repetitions", type=positive_integer)
+    benchmark.add_argument("--concurrency", type=positive_integer, default=1)
+    benchmark.add_argument("--warmup-requests", type=non_negative_integer)
+    benchmark.add_argument("--measured-requests", type=positive_integer)
+    benchmark.add_argument("--max-new-tokens", type=positive_integer)
+    benchmark.add_argument("--cuda-device", default="0")
+    benchmark.add_argument("--startup-timeout", type=float, default=180.0)
+    benchmark.add_argument("--request-timeout", type=float, default=180.0)
+    benchmark.add_argument("--python")
+    benchmark.add_argument("--dry-run", action="store_true")
+    benchmark.set_defaults(handler=execute_benchmark)
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = make_parser().parse_args(argv)
+    try:
+        return int(args.handler(args))
+    except subprocess.CalledProcessError as exception:
+        print(
+            f"kim-llm command failed with exit code {exception.returncode}",
+            file=sys.stderr,
+        )
+        return exception.returncode or 1
+    except (EntryPointError, OSError) as exception:
+        print(f"kim-llm failed: {exception}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
