@@ -1,0 +1,52 @@
+name: CPU CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpu-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-contracts:
+    name: CPU-only build and contract tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install CPU test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes nlohmann-json3-dev
+          python -m pip install --upgrade pip
+          python -m pip install "fastapi>=0.110,<1" "httpx>=0.27,<1"
+
+      - name: Configure CPU-only build
+        run: >-
+          cmake -S . -B build-cpu
+          -DKIM_LLM_ENABLE_TRTLLM=OFF
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build CPU targets
+        run: cmake --build build-cpu --parallel 2
+
+      - name: Run CPU contract tests
+        run: >-
+          ctest --test-dir build-cpu
+          --output-on-failure
+          --no-tests=error
