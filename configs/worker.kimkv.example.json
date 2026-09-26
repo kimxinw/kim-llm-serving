@@ -1,0 +1,38 @@
+{
+  "backend": "kimkv",
+  "weights_manifest": "/path/to/tinyllama-1.1b-chat-fp16.manifest",
+  "weights_data": "/path/to/tinyllama-1.1b-chat-fp16.weights",
+  "kimkv": {
+    "max_kv_tokens": 8192,
+    "max_batched_tokens": 32,
+    "prefill_chunk_size": 16,
+    "model_max_batch_tokens": 32,
+    "micro_page_capacity": 512,
+    "extent_page_capacity": 64
+  },
+  "socket_path": "/tmp/kim-llm-worker.sock",
+  "manifest": {
+    "model_id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "revision": "88e648e026e00c9252e31312b7ba8eb2fdd9b7c3",
+    "tokenizer_fingerprint": "REPLACE_WITH_INSPECT_TOKENIZER_VALUE",
+    "chat_template_fingerprint": "REPLACE_WITH_INSPECT_TOKENIZER_VALUE",
+    "engine_fingerprint": "REPLACE_WITH_WEIGHTS_MANIFEST_SHA256",
+    "eos_token_id": 2,
+    "pad_token_id": 2,
+    "max_input_tokens": 512,
+    "max_output_tokens": 32,
+    "max_sequence_tokens": 544,
+    "precision": "fp16",
+    "max_batch_size": 4
+  },
+  "limits": {
+    "max_active_requests": 4,
+    "max_total_input_tokens": 2048,
+    "max_reserved_output_tokens": 128,
+    "max_frame_payload_bytes": 1048576,
+    "max_session_egress_frames": 1024,
+    "max_session_egress_bytes": 16777216,
+    "max_request_egress_frames": 64,
+    "max_request_egress_bytes": 1048576
+  }
+}

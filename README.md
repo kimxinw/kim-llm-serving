@@ -1,8 +1,8 @@
-# 基于 TensorRT-LLM 的LLM推理服务框架
+# kim-llm-serving 推理服务框架
 
-`kim-llm-serving` 是一个使用 C++17 和 TensorRT-LLM Executor 实现的 LLM Serving Runtime，提供 OpenAI-compatible HTTP/SSE 接口，重点解决请求生命周期、并发安全、资源治理、流式输出和故障收敛。
+`kim-llm-serving` 是一个 C++17 LLM Serving Runtime，提供 OpenAI-compatible HTTP/SSE 接口，重点解决请求生命周期、并发安全、资源治理、流式输出和故障收敛。Worker 可选用 TensorRT-LLM Executor 或 `kim-llm-runtime` 的 KimKV 后端。
 
-项目采用 Python Gateway 与独立 C++ Worker 的双进程架构。连续批处理、Paged KV Cache 和模型执行调度由 TensorRT-LLM 提供，本项目负责其上的服务数据面。
+项目采用 Python Gateway 与独立 C++ Worker 的双进程架构。选用 TensorRT-LLM 时，连续批处理、Paged KV Cache 和模型调度由其 Executor 提供；选用 KimKV 时，由相邻的 `kim-llm-runtime` 仓库提供调度、KV 和 CUDA 模型执行。
 
 ```mermaid
 graph LR
@@ -10,7 +10,7 @@ graph LR
     B -->|Versioned UDS IPC| C[C++ llm_worker]
     C --> D[GenerationRuntime]
     D --> E[Admission / RequestState / Mailbox]
-    E --> F[TensorRT-LLM Executor]
+    E --> F[TensorRT-LLM 或 KimKV]
     F --> G[GPU]
 ```
 
@@ -74,20 +74,27 @@ graph TD
 | Token Budget 过载实验 | 24/32 RPS 下 E2E P95 由 `425/426 ms` 降至 `305/314 ms` |
 | 慢客户端隔离 | 健康请求 `339/339` 满足 SLO，TTFT P95 增加 `0.572 ms` |
 
-当前实验均固定模型、Engine、GPU、workload 和提交，并重复三轮以上。结果位于 `benchmark/evidence`。
+表中 GPU 性能数据来自 TensorRT-LLM 后端，固定模型、Engine、GPU、workload 和提交，并重复三轮以上。结果位于 `benchmark/evidence`；不代表 KimKV 后端性能。
+
+## KimKV 后端接入
+
+KimKV 后端的构建、配置和后续服务器部署步骤见 [docs/KIMKV_BACKEND.md](docs/KIMKV_BACKEND.md)。它通过 `GenerationTokenSink` 把每个生成 Token 直接送入有界 Mailbox，并在取消、超时、背压和停止时交付终态。目前支持 FP16 TinyLlama、单 GPU、贪心采样；`stop_sequences` 和其他采样参数会被明确拒绝。
 
 ## 构建与测试
 
 CPU-only 路径不依赖 CUDA、TensorRT 或真实 Engine：
 
 ```bash
+# 在仓库根目录执行；安装 Gateway Python 依赖和测试用 httpx，会修改当前 Python 环境。
 python3 -m pip install -r gateway/python/requirements.txt "httpx>=0.27,<1"
+# 在仓库根目录执行；配置、构建并运行 CPU 契约测试，预期全部通过。
 ./kim-llm test
 ```
 
 GPU 路径需要 TensorRT-LLM 0.16.0、TensorRT 10.7.0.23 和 CXX11 ABI 0：
 
 ```bash
+# 在仓库根目录执行；把三个占位路径换成本机 TRT-LLM 源码、库和 TensorRT SDK，指定 Engine 目录后构建并运行 GPU 测试。
 ./kim-llm test --gpu \
   --trtllm-source-dir /path/to/TensorRT-LLM \
   --trtllm-lib-dir /path/to/tensorrt_llm/libs \
@@ -98,11 +105,13 @@ GPU 路径需要 TensorRT-LLM 0.16.0、TensorRT 10.7.0.23 和 CXX11 ABI 0：
 统一入口还提供服务与三路径 Benchmark：
 
 ```bash
+# 在仓库根目录执行；读取给定 Gateway 配置并启动服务，进程在前台运行。
 ./kim-llm serve --gateway-config configs/gateway.local.json
+# 在仓库根目录执行；把占位路径换成 Engine 与 Tokenizer 的真实路径，运行三路径 Benchmark 并生成结果文件。
 ./kim-llm benchmark --engine-dir /path/to/engine --tokenizer-path /path/to/tokenizer
 ```
 
-使用 `./kim-llm --help` 查看完整参数。
+在仓库根目录执行 `./kim-llm --help` 可查看完整参数；当前脚本未纳入 Git 跟踪，迁移部署时见 KimKV 文档中的直接启动命令。
 
 ## 当前范围
 

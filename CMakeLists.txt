@@ -18,6 +18,11 @@ option(
     "Build the TensorRT-LLM backend, GPU applications, and Engine tests"
     ON
 )
+option(
+    KIM_LLM_ENABLE_KIMKV
+    "Build the Kim-LLM-Runtime CUDA backend"
+    OFF
+)
 
 set(KIM_LLM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -292,20 +297,6 @@ if(KIM_LLM_ENABLE_TRTLLM)
     )
 
     add_executable(
-        llm_worker
-        "${KIM_LLM_ROOT}/apps/llm_worker.cpp"
-    )
-    kim_llm_enable_warnings(llm_worker)
-    target_link_options(llm_worker PRIVATE -Wl,--allow-shlib-undefined)
-    target_link_libraries(
-        llm_worker
-        PRIVATE
-            kim_llm::worker_core
-            kim_llm::trtllm_backend
-            nlohmann_json::nlohmann_json
-    )
-
-    add_executable(
         llm_infer
         "${KIM_LLM_ROOT}/apps/llm_infer.cpp"
     )
@@ -328,6 +319,45 @@ if(KIM_LLM_ENABLE_TRTLLM)
         PRIVATE
             kim_llm::trtllm_backend
     )
+endif()
+
+if(KIM_LLM_ENABLE_KIMKV)
+    set(KIM_KV_SOURCE_DIR "${KIM_LLM_ROOT}/../kim-llm-runtime"
+        CACHE PATH "Kim-LLM-Runtime source directory")
+    if(NOT EXISTS "${KIM_KV_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "KIM_KV_SOURCE_DIR must contain Kim-LLM-Runtime")
+    endif()
+    set(KIM_KV_ENABLE_CUDA ON CACHE BOOL "Build KimKV CUDA backend" FORCE)
+    add_subdirectory("${KIM_KV_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/kim_kv")
+    set_target_properties(kim_kv_cuda PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    # Both sides exchange std::string through the KimKV API. Compile with the
+    # Worker's existing ABI setting instead of mixing the CXX11 ABI variants.
+    target_compile_definitions(kim_kv PUBLIC _GLIBCXX_USE_CXX11_ABI=0)
+
+    add_library(kim_llm_kimkv_backend STATIC
+        "${KIM_LLM_ROOT}/src/backends/kimkv/kimkv_backend.cpp"
+        "${KIM_LLM_ROOT}/src/backends/kimkv/kimkv_cuda_factory.cpp")
+    add_library(kim_llm::kimkv_backend ALIAS kim_llm_kimkv_backend)
+    kim_llm_enable_warnings(kim_llm_kimkv_backend)
+    target_link_libraries(kim_llm_kimkv_backend
+        PUBLIC kim_llm::runtime kim_kv_cuda
+        PRIVATE Threads::Threads)
+endif()
+
+if(KIM_LLM_ENABLE_TRTLLM OR KIM_LLM_ENABLE_KIMKV)
+    add_executable(llm_worker "${KIM_LLM_ROOT}/apps/llm_worker.cpp")
+    kim_llm_enable_warnings(llm_worker)
+    target_link_libraries(llm_worker PRIVATE
+        kim_llm::worker_core nlohmann_json::nlohmann_json)
+    if(KIM_LLM_ENABLE_TRTLLM)
+        target_compile_definitions(llm_worker PRIVATE KIM_LLM_HAS_TRTLLM=1)
+        target_link_options(llm_worker PRIVATE -Wl,--allow-shlib-undefined)
+        target_link_libraries(llm_worker PRIVATE kim_llm::trtllm_backend)
+    endif()
+    if(KIM_LLM_ENABLE_KIMKV)
+        target_compile_definitions(llm_worker PRIVATE KIM_LLM_HAS_KIMKV=1)
+        target_link_libraries(llm_worker PRIVATE kim_llm::kimkv_backend)
+    endif()
 endif()
 
 if(BUILD_TESTING)
@@ -506,6 +536,16 @@ if(BUILD_TESTING)
         )
     endif()
 
+    if(KIM_LLM_ENABLE_KIMKV)
+        kim_llm_add_contract_test(
+            llm_kimkv_backend_cpu_test
+            llm_kimkv_backend_cpu_contract
+            tests/backends/kimkv_backend_cpu_test.cpp
+            30
+            kim_llm::kimkv_backend
+        )
+    endif()
+
     if(KIM_LLM_ENABLE_TRTLLM)
         set(
             KIMRT_LLM_TEST_ENGINE_DIR
@@ -579,7 +619,7 @@ if(BUILD_TESTING)
     else()
         message(
             STATUS
-            "KIM_LLM_ENABLE_TRTLLM=OFF; GPU applications and Engine tests are disabled"
+            "KIM_LLM_ENABLE_TRTLLM=OFF; TensorRT-LLM applications and Engine tests are disabled"
         )
     endif()
 endif()

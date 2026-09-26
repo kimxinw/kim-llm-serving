@@ -1,4 +1,9 @@
+#if defined(KIM_LLM_HAS_TRTLLM)
 #include "backends/trtllm/trtllm_executor_backend.h"
+#endif
+#if defined(KIM_LLM_HAS_KIMKV)
+#include "backends/kimkv/kimkv_backend.h"
+#endif
 #include "ipc/ipc_protocol.h"
 #include "runtime/generation_runtime.h"
 #include "worker/worker_server.h"
@@ -40,15 +45,27 @@ using kimrt::llm::GenerationRuntimeConfig;
 using kimrt::llm::RuntimeBridgeConfig;
 using kimrt::llm::SloAdmissionPolicyConfig;
 using kimrt::llm::SloProfileEntry;
+using kimrt::llm::GenerationBackend;
+#if defined(KIM_LLM_HAS_TRTLLM)
 using kimrt::llm::TrtLlmBackendConfig;
 using kimrt::llm::TrtLlmExecutorBackend;
+#endif
 using kimrt::llm::WorkerServer;
 using kimrt::llm::WorkerServerConfig;
 using kimrt::llm::ipc::ModelManifest;
 using kimrt::llm::ipc::WorkerLimits;
 
 struct WorkerApplicationConfig {
+    std::string backend{"trtllm"};
     std::filesystem::path engine_dir;
+    std::filesystem::path weights_manifest;
+    std::filesystem::path weights_data;
+    std::uint64_t max_kv_tokens{0};
+    std::uint32_t max_batched_tokens{0};
+    std::uint32_t prefill_chunk_size{0};
+    std::uint32_t model_max_batch_tokens{0};
+    std::uint32_t micro_page_capacity{0};
+    std::uint32_t extent_page_capacity{0};
     std::string socket_path;
     ModelManifest manifest;
     WorkerLimits limits;
@@ -89,21 +106,51 @@ public:
                 exception.what());
         }
 
-        if (root.contains("slo_policy")) {
-            requireExactFields(
-                root,
-                {"engine_dir", "socket_path", "manifest", "limits",
-                 "slo_policy"},
-                "worker configuration");
-        } else {
-            requireExactFields(
-                root,
-                {"engine_dir", "socket_path", "manifest", "limits"},
-                "worker configuration");
-        }
-
         WorkerApplicationConfig config;
-        config.engine_dir = requireString(root, "engine_dir");
+        config.backend = root.contains("backend")
+            ? requireString(root, "backend") : "trtllm";
+        if (config.backend == "trtllm") {
+            if (root.contains("backend")) {
+                if (root.contains("slo_policy")) {
+                    requireExactFields(root,
+                        {"backend", "engine_dir", "socket_path", "manifest",
+                         "limits", "slo_policy"}, "worker configuration");
+                } else {
+                    requireExactFields(root,
+                        {"backend", "engine_dir", "socket_path", "manifest",
+                         "limits"}, "worker configuration");
+                }
+            } else if (root.contains("slo_policy")) {
+                requireExactFields(root,
+                    {"engine_dir", "socket_path", "manifest", "limits",
+                     "slo_policy"}, "worker configuration");
+            } else {
+                requireExactFields(root,
+                    {"engine_dir", "socket_path", "manifest", "limits"},
+                    "worker configuration");
+            }
+            config.engine_dir = requireString(root, "engine_dir");
+        } else if (config.backend == "kimkv") {
+            if (root.contains("slo_policy")) {
+                requireExactFields(root,
+                    {"backend", "weights_manifest", "weights_data", "kimkv",
+                     "socket_path", "manifest", "limits", "slo_policy"},
+                    "worker configuration");
+            } else {
+                requireExactFields(root,
+                    {"backend", "weights_manifest", "weights_data", "kimkv",
+                     "socket_path", "manifest", "limits"},
+                    "worker configuration");
+            }
+            config.weights_manifest = resolvePath(
+                requireString(root, "weights_manifest"));
+            config.weights_data = resolvePath(
+                requireString(root, "weights_data"));
+            parseKimKv(root.at("kimkv"), config);
+        } else {
+            throw std::runtime_error("unsupported worker backend: " +
+                config.backend);
+        }
         config.socket_path = requireString(root, "socket_path");
         config.manifest = parseManifest(root.at("manifest"));
         config.limits = parseLimits(root.at("limits"));
@@ -117,9 +164,12 @@ public:
                     "slo_policy identity does not match the Worker manifest");
             }
         }
-        if (config.engine_dir.empty() || config.socket_path.empty()) {
+        if (config.socket_path.empty() ||
+            (config.backend == "trtllm" && config.engine_dir.empty()) ||
+            (config.backend == "kimkv" &&
+                (config.weights_manifest.empty() || config.weights_data.empty()))) {
             throw std::runtime_error(
-                "engine_dir and socket_path must not be empty");
+                "worker backend paths and socket_path must not be empty");
         }
         auto const encoded = kimrt::llm::ipc::encodePayload(
             kimrt::llm::ipc::Message{kimrt::llm::ipc::HelloAck{
@@ -137,6 +187,39 @@ public:
     }
 
 private:
+    [[nodiscard]] std::filesystem::path resolvePath(
+        std::filesystem::path path) const {
+        return path.is_absolute() ? std::move(path) :
+            (path_.parent_path() / path).lexically_normal();
+    }
+
+    static void parseKimKv(Json const& object,
+        WorkerApplicationConfig& config) {
+        requireExactFields(object,
+            {"max_kv_tokens", "max_batched_tokens", "prefill_chunk_size",
+             "model_max_batch_tokens", "micro_page_capacity",
+             "extent_page_capacity"}, "kimkv configuration");
+        config.max_kv_tokens =
+            requireInteger<std::uint64_t>(object, "max_kv_tokens");
+        config.max_batched_tokens =
+            requireInteger<std::uint32_t>(object, "max_batched_tokens");
+        config.prefill_chunk_size =
+            requireInteger<std::uint32_t>(object, "prefill_chunk_size");
+        config.model_max_batch_tokens =
+            requireInteger<std::uint32_t>(object, "model_max_batch_tokens");
+        config.micro_page_capacity =
+            requireInteger<std::uint32_t>(object, "micro_page_capacity");
+        config.extent_page_capacity =
+            requireInteger<std::uint32_t>(object, "extent_page_capacity");
+        if (config.max_kv_tokens == 0 || config.max_batched_tokens == 0 ||
+            config.prefill_chunk_size == 0 ||
+            config.model_max_batch_tokens == 0 ||
+            config.micro_page_capacity == 0 ||
+            config.extent_page_capacity == 0) {
+            throw std::runtime_error("kimkv capacities must be positive");
+        }
+    }
+
     static void requireExactFields(
         Json const& object,
         std::initializer_list<std::string_view> fields,
@@ -356,12 +439,10 @@ public:
     [[nodiscard]] int run() {
         blockTerminationSignals();
 
-        auto backend_config = makeBackendConfig();
         auto runtime_config = makeRuntimeConfig();
         auto server_config = makeServerConfig();
         GenerationRuntime runtime(
-            std::make_unique<TrtLlmExecutorBackend>(
-                std::move(backend_config)),
+            makeBackend(),
             std::move(runtime_config));
 
         auto status = runtime.start();
@@ -414,13 +495,39 @@ private:
         }
     }
 
-    [[nodiscard]] TrtLlmBackendConfig makeBackendConfig() const {
+    [[nodiscard]] std::unique_ptr<GenerationBackend> makeBackend() const {
+        if (config_.backend == "kimkv") {
+#if defined(KIM_LLM_HAS_KIMKV)
+            kimrt::llm::KimKvBackendConfig config;
+            config.weights_manifest = config_.weights_manifest;
+            config.weights_data = config_.weights_data;
+            config.eos_token_id = static_cast<std::uint32_t>(
+                config_.manifest.eos_token_id);
+            config.max_input_tokens = config_.manifest.max_input_tokens;
+            config.max_output_tokens = config_.manifest.max_output_tokens;
+            config.max_sequence_tokens = config_.manifest.max_sequence_tokens;
+            config.max_active_requests = config_.limits.max_active_requests;
+            config.max_batched_tokens = config_.max_batched_tokens;
+            config.prefill_chunk_size = config_.prefill_chunk_size;
+            config.model_max_batch_tokens = config_.model_max_batch_tokens;
+            config.max_kv_tokens = config_.max_kv_tokens;
+            config.micro_page_capacity = config_.micro_page_capacity;
+            config.extent_page_capacity = config_.extent_page_capacity;
+            return kimrt::llm::createCudaKimKvBackend(std::move(config));
+#else
+            throw std::runtime_error("Worker was built without KimKV backend");
+#endif
+        }
+#if defined(KIM_LLM_HAS_TRTLLM)
         TrtLlmBackendConfig config;
         config.engine_dir = config_.engine_dir;
         config.max_input_tokens = config_.manifest.max_input_tokens;
         config.max_output_tokens = config_.manifest.max_output_tokens;
         config.max_sequence_tokens = config_.manifest.max_sequence_tokens;
-        return config;
+        return std::make_unique<TrtLlmExecutorBackend>(std::move(config));
+#else
+        throw std::runtime_error("Worker was built without TensorRT-LLM backend");
+#endif
     }
 
     [[nodiscard]] GenerationRuntimeConfig makeRuntimeConfig() const {
